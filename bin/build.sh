@@ -1,4 +1,4 @@
 rm -f fabric-ca-server
 cd ..
-make
+make fabric-ca-server
 cd bin

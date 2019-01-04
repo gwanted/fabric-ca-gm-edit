@@ -17,117 +17,124 @@ limitations under the License.
 package lib
 
 import (
-	"encoding/json"
-	// "errors"
 	"fmt"
-	"io/ioutil"
-	"net/http"
+	"net/url"
 	"strings"
 
-	cfsslapi "github.com/cloudflare/cfssl/api"
+	"github.com/pkg/errors"
+
 	"github.com/cloudflare/cfssl/log"
 
 	"github.com/tjfoc/fabric-ca-gm/api"
+	"github.com/tjfoc/fabric-ca-gm/lib/attr"
 	"github.com/tjfoc/fabric-ca-gm/lib/spi"
 	"github.com/tjfoc/fabric-ca-gm/util"
 )
 
-// registerHandler for register requests
-type registerHandler struct {
-	server *Server
-}
-
-// newRegisterHandler is constructor for register handler
-func newRegisterHandler(server *Server) (h http.Handler, err error) {
-	// NewHandler is constructor for register handler
-	return &cfsslapi.HTTPHandler{
-		Handler: &registerHandler{server: server},
-		Methods: []string{"POST"},
-	}, nil
+func newRegisterEndpoint(s *Server) *serverEndpoint {
+	return &serverEndpoint{
+		Methods:   []string{"POST"},
+		Handler:   registerHandler,
+		Server:    s,
+		successRC: 201,
+	}
 }
 
 // Handle a register request
-func (h *registerHandler) Handle(w http.ResponseWriter, r *http.Request) error {
-	log.Debug("Register request received")
-
-	reqBody, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-	r.Body.Close()
-
-	// Parse request body
+func registerHandler(ctx *serverRequestContext) (interface{}, error) {
+	// Read request body
 	var req api.RegistrationRequestNet
-	err = json.Unmarshal(reqBody, &req)
+	err := ctx.ReadBody(&req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	caname := r.Header.Get(caHdrName)
-
+	// Authenticate
+	callerID, err := ctx.TokenAuthentication()
+	log.Debugf("Received registration request from %s: %v", callerID, &req)
+	if err != nil {
+		return nil, err
+	}
+	// Get the target CA
+	ca, err := ctx.GetCA()
+	if err != nil {
+		return nil, err
+	}
 	// Register User
-	callerID := r.Header.Get(enrollmentIDHdrName)
-	secret, err := h.RegisterUser(&req, callerID, caname)
+	secret, err := registerUser(&req.RegistrationRequest, callerID, ca, ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	resp := &api.RegistrationResponseNet{RegistrationResponse: api.RegistrationResponse{Secret: secret}}
-
-	log.Debugf("Registration completed - sending response %+v", &resp)
-	return cfsslapi.SendResponse(w, resp)
+	// Return response
+	resp := &api.RegistrationResponseNet{
+		RegistrationResponse: api.RegistrationResponse{Secret: secret},
+	}
+	return resp, nil
 }
 
-// RegisterUser will register a user
-func (h *registerHandler) RegisterUser(req *api.RegistrationRequestNet, registrar, caname string) (string, error) {
-
-	secret := req.Secret
-	req.Secret = "<<user-specified>>"
-	log.Debugf("Received registration request from %s: %+v", registrar, req)
-	req.Secret = secret
-
+// RegisterUser will register a user and return the secret
+func registerUser(req *api.RegistrationRequest, registrar string, ca *CA, ctx *serverRequestContext) (string, error) {
 	var err error
+	var registrarUser spi.User
 
-	if registrar != "" {
-		// Check the permissions of member named 'registrar' to perform this registration
-		err = h.canRegister(registrar, req.Type, caname)
-		if err != nil {
-			log.Debugf("Registration of '%s' failed: %s", req.Name, err)
-			return "", err
-		}
+	registrarUser, err = ctx.GetCaller()
+	if err != nil {
+		return "", err
 	}
 
-	err = h.validateID(req, caname)
+	normalizeRegistrationRequest(req, registrarUser)
+
+	// Check the permissions of member named 'registrar' to perform this registration
+	err = canRegister(registrarUser, req, ctx)
 	if err != nil {
 		log.Debugf("Registration of '%s' failed: %s", req.Name, err)
 		return "", err
 	}
 
-	secret, err = h.registerUserID(req, caname)
+	secret, err := registerUserID(req, ca)
 
 	if err != nil {
-		log.Debugf("Registration of '%s' failed: %s", req.Name, err)
-		return "", err
+		return "", errors.WithMessage(err, fmt.Sprintf("Registration of '%s' failed", req.Name))
 	}
-
+	// Set the location header to the URI of the identity that was created by the registration request
+	ctx.resp.Header().Set("Location", fmt.Sprintf("%sidentities/%s", apiPathPrefix, url.PathEscape(req.Name)))
 	return secret, nil
 }
 
-func (h *registerHandler) validateID(req *api.RegistrationRequestNet, caname string) error {
+func normalizeRegistrationRequest(req *api.RegistrationRequest, registrar spi.User) {
+	if req.Affiliation == "" {
+		registrarAff := GetUserAffiliation(registrar)
+		log.Debugf("No affiliation provided in registration request, will default to using registrar's affiliation of '%s'", registrarAff)
+		req.Affiliation = registrarAff
+	} else if req.Affiliation == "." {
+		// Affiliation request of '.' signifies request for root affiliation
+		req.Affiliation = ""
+	}
+
+	if req.Type == "" {
+		req.Type = registrar.GetType()
+	}
+}
+
+func validateAffiliation(req *api.RegistrationRequest, ctx *serverRequestContext) error {
+	log.Debug("Validate Affiliation")
+	err := ctx.ContainsAffiliation(req.Affiliation)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateID(req *api.RegistrationRequest, ca *CA) error {
 	log.Debug("Validate ID")
-	// Check whether the affiliation is required for the current user.
-	if h.requireAffiliation(req.Type) {
-		// If yes, is the affiliation valid
-		err := h.isValidAffiliation(req.Affiliation, caname)
-		if err != nil {
-			return err
-		}
+	err := isValidAffiliation(req.Affiliation, ca)
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
 // registerUserID registers a new user and its enrollmentID, role and state
-func (h *registerHandler) registerUserID(req *api.RegistrationRequestNet, caname string) (string, error) {
+func registerUserID(req *api.RegistrationRequest, ca *CA) (string, error) {
 	log.Debugf("Registering user id: %s\n", req.Name)
 	var err error
 
@@ -135,20 +142,16 @@ func (h *registerHandler) registerUserID(req *api.RegistrationRequestNet, caname
 		req.Secret = util.RandomString(12)
 	}
 
-	caMaxEnrollments := h.server.caMap[caname].Config.Registry.MaxEnrollments
-
-	req.MaxEnrollments, err = getMaxEnrollments(req.MaxEnrollments, caMaxEnrollments)
+	req.MaxEnrollments, err = getMaxEnrollments(req.MaxEnrollments, ca.Config.Registry.MaxEnrollments)
 	if err != nil {
 		return "", err
 	}
 
-	// Make sure delegateRoles is not larger than roles
-	roles := GetAttrValue(req.Attributes, attrRoles)
-	delegateRoles := GetAttrValue(req.Attributes, attrDelegateRoles)
-	err = util.IsSubsetOf(delegateRoles, roles)
-	if err != nil {
-		return "", fmt.Errorf("delegateRoles is superset of roles: %s", err)
-	}
+	// Add attributes containing the enrollment ID, type, and affiliation if not
+	// already defined
+	addAttributeToRequest(attr.EnrollmentID, req.Name, &req.Attributes)
+	addAttributeToRequest(attr.Type, req.Type, &req.Attributes)
+	addAttributeToRequest(attr.Affiliation, req.Affiliation, &req.Attributes)
 
 	insert := spi.UserInfo{
 		Name:           req.Name,
@@ -157,16 +160,17 @@ func (h *registerHandler) registerUserID(req *api.RegistrationRequestNet, caname
 		Affiliation:    req.Affiliation,
 		Attributes:     req.Attributes,
 		MaxEnrollments: req.MaxEnrollments,
+		Level:          ca.server.levels.Identity,
 	}
 
-	registry := h.server.caMap[caname].registry
+	registry := ca.registry
 
 	_, err = registry.GetUser(req.Name, nil)
 	if err == nil {
-		return "", fmt.Errorf("Identity '%s' is already registered", req.Name)
+		return "", errors.Errorf("Identity '%s' is already registered", req.Name)
 	}
 
-	err = registry.InsertUser(insert)
+	err = registry.InsertUser(&insert)
 	if err != nil {
 		return "", err
 	}
@@ -174,48 +178,65 @@ func (h *registerHandler) registerUserID(req *api.RegistrationRequestNet, caname
 	return req.Secret, nil
 }
 
-func (h *registerHandler) isValidAffiliation(affiliation string, caname string) error {
-	log.Debug("Validating affiliation: " + affiliation)
+func isValidAffiliation(affiliation string, ca *CA) error {
+	log.Debugf("Validating affiliation: %s", affiliation)
 
-	_, err := h.server.caMap[caname].registry.GetAffiliation(affiliation)
+	// If requested affiliation is for root then don't need to do lookup in affiliation's table
+	if affiliation == "" {
+		return nil
+	}
+
+	_, err := ca.registry.GetAffiliation(affiliation)
 	if err != nil {
-		return fmt.Errorf("Failed getting affiliation '%s': %s", affiliation, err)
+		return errors.WithMessage(err, fmt.Sprintf("Failed getting affiliation '%s'", affiliation))
 	}
 
 	return nil
 }
 
-func (h *registerHandler) requireAffiliation(idType string) bool {
-	log.Debugf("An affiliation is required for identity type %s", idType)
-	// Require an affiliation for all identity types
-	return true
-}
-
-func (h *registerHandler) canRegister(registrar string, userType string, caname string) error {
-	log.Debugf("canRegister - Check to see if user %s can register", registrar)
-
-	user, err := h.server.caMap[caname].registry.GetUser(registrar, nil)
-	if err != nil {
-		return fmt.Errorf("Registrar does not exist: %s", err)
-	}
+func canRegister(registrar spi.User, req *api.RegistrationRequest, ctx *serverRequestContext) error {
+	log.Debugf("canRegister - Check to see if user '%s' can register", registrar.GetName())
 
 	var roles []string
-	rolesStr := user.GetAttribute("hf.Registrar.Roles")
-	log.Info("================roles = ", rolesStr)
+	rolesStr, isRegistrar, err := ctx.isRegistrar()
+	if err != nil {
+		return err
+	}
+	if !isRegistrar {
+		return errors.Errorf("'%s' does not have authority to register identities", registrar)
+	}
 	if rolesStr != "" {
 		roles = strings.Split(rolesStr, ",")
 	} else {
 		roles = make([]string, 0)
 	}
-	if userType != "" {
-		if !util.StrContained(userType, roles) {
-			//test user
-			return fmt.Errorf("Identity '%s' may not register type '%s'", registrar, userType)
-		}
-	} else {
-		userType = "client"
-		// return errors.New("No identity type provided. Please provide identity type")
+	if req.Type == "" {
+		req.Type = "client"
+	}
+	if !util.StrContained(req.Type, roles) {
+		return fmt.Errorf("Identity '%s' may not register type '%s'", registrar, req.Type)
+	}
+
+	// Check that the affiliation requested is of the appropriate level
+	err = validateAffiliation(req, ctx)
+	if err != nil {
+		return fmt.Errorf("Registration of '%s' failed in affiliation validation: %s", req.Name, err)
+	}
+
+	err = validateID(req, ctx.ca)
+	if err != nil {
+		return errors.WithMessage(err, fmt.Sprintf("Registration of '%s' to validate", req.Name))
+	}
+
+	err = attr.CanRegisterRequestedAttributes(req.Attributes, nil, registrar)
+	if err != nil {
+		return newAuthErr(ErrRegAttrAuth, "Failed to register attribute: %s", err)
 	}
 
 	return nil
+}
+
+// Add an attribute to the registration request if not already found.
+func addAttributeToRequest(name, value string, attributes *[]api.Attribute) {
+	*attributes = append(*attributes, api.Attribute{Name: name, Value: value, ECert: true})
 }

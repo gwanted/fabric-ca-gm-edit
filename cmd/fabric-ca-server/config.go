@@ -17,16 +17,16 @@ limitations under the License.
 package main
 
 import (
-	"errors"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/pkg/errors"
+
 	"github.com/cloudflare/cfssl/log"
-	"github.com/spf13/viper"
 	"github.com/tjfoc/fabric-ca-gm/lib"
+	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
 	"github.com/tjfoc/fabric-ca-gm/util"
 )
 
@@ -52,9 +52,9 @@ const (
 #      Examples:
 #      a) --port 443
 #         To set the listening port
-#      b) --ca-keyfile ../mykey.pem
+#      b) --ca.keyfile ../mykey.pem
 #         To set the "keyfile" element in the "ca" section below;
-#         note the '-' separator character.
+#         note the '.' separator character.
 #   2) environment variable
 #      Examples:
 #      a) FABRIC_CA_SERVER_PORT=443
@@ -77,6 +77,9 @@ const (
 #   of this configuration file.
 #
 #############################################################################
+
+# Version of config file
+version: <<<VERSION>>>
 
 # Server's listening port (default: 7054)
 port: 7054
@@ -101,8 +104,8 @@ tls:
   # Enable TLS (default: false)
   enabled: false
   # TLS for the server's listening port
-  certfile: ca-cert.pem
-  keyfile: ca-key.pem
+  certfile:
+  keyfile:
   clientauth:
     type: noclientcert
     certfiles:
@@ -120,12 +123,23 @@ tls:
 ca:
   # Name of this CA
   name:
-  # Key file (default: ca-key.pem)
-  keyfile: ca-key.pem
+  # Key file (is only used to import a private key into BCCSP)
+  keyfile:
   # Certificate file (default: ca-cert.pem)
-  certfile: ca-cert.pem
-  # Chain file (default: chain-cert.pem)
-  chainfile: ca-chain.pem
+  certfile:
+  # Chain file
+  chainfile:
+
+#############################################################################
+#  The gencrl REST endpoint is used to generate a CRL that contains revoked
+#  certificates. This section contains configuration options that are used
+#  during gencrl request processing.
+#############################################################################
+crl:
+  # Specifies expiration for the generated CRL. The number of hours
+  # specified by this property is added to the UTC time, the resulting time
+  # is used to set the 'Next Update' date of the CRL.
+  expiry: 24h
 
 #############################################################################
 #  The registry section controls how the fabric-ca-server does two things:
@@ -155,12 +169,14 @@ registry:
        pass: <<<ADMINPW>>>
        type: client
        affiliation: ""
-       maxenrollments: -1
        attrs:
-          hf.Registrar.Roles: "client,user,peer,validator,auditor"
-          hf.Registrar.DelegateRoles: "client,user,validator,auditor"
+          hf.Registrar.Roles: "peer,orderer,client,user"
+          hf.Registrar.DelegateRoles: "peer,orderer,client,user"
           hf.Revoker: true
           hf.IntermediateCA: true
+          hf.GenCRL: true
+          hf.Registrar.Attributes: "*"
+          hf.AffiliationMgr: true
 
 #############################################################################
 #  Database section
@@ -173,15 +189,14 @@ registry:
 #  or "mysql".
 #############################################################################
 db:
-  type: mysql
-  datasource: root@hello123@tcp(10.36.8.175:3306)/fabric_ca?parseTime=true
+  type: sqlite3
+  datasource: fabric-ca-server.db
   tls:
       enabled: false
       certfiles:
-        - db-server-cert.pem
       client:
-        certfile: db-client-cert.pem
-        keyfile: db-client-key.pem
+        certfile:
+        keyfile:
 
 #############################################################################
 #  LDAP section
@@ -196,15 +211,72 @@ ldap:
    enabled: false
    # The URL of the LDAP server
    url: ldap://<adminDN>:<adminPassword>@<host>:<port>/<base>
+   # TLS configuration for the client connection to the LDAP server
    tls:
       certfiles:
-        - ldap-server-cert.pem
       client:
-         certfile: ldap-client-cert.pem
-         keyfile: ldap-client-key.pem
+         certfile:
+         keyfile:
+   # Attribute related configuration for mapping from LDAP entries to Fabric CA attributes
+   attribute:
+      # 'names' is an array of strings containing the LDAP attribute names which are
+      # requested from the LDAP server for an LDAP identity's entry
+      names: ['uid','member']
+      # The 'converters' section is used to convert an LDAP entry to the value of
+      # a fabric CA attribute.
+      # For example, the following converts an LDAP 'uid' attribute
+      # whose value begins with 'revoker' to a fabric CA attribute
+      # named "hf.Revoker" with a value of "true" (because the boolean expression
+      # evaluates to true).
+      #    converters:
+      #       - name: hf.Revoker
+      #         value: attr("uid") =~ "revoker*"
+      converters:
+         - name:
+           value:
+      # The 'maps' section contains named maps which may be referenced by the 'map'
+      # function in the 'converters' section to map LDAP responses to arbitrary values.
+      # For example, assume a user has an LDAP attribute named 'member' which has multiple
+      # values which are each a distinguished name (i.e. a DN). For simplicity, assume the
+      # values of the 'member' attribute are 'dn1', 'dn2', and 'dn3'.
+      # Further assume the following configuration.
+      #    converters:
+      #       - name: hf.Registrar.Roles
+      #         value: map(attr("member"),"groups")
+      #    maps:
+      #       groups:
+      #          - name: dn1
+      #            value: peer
+      #          - name: dn2
+      #            value: client
+      # The value of the user's 'hf.Registrar.Roles' attribute is then computed to be
+      # "peer,client,dn3".  This is because the value of 'attr("member")' is
+      # "dn1,dn2,dn3", and the call to 'map' with a 2nd argument of
+      # "group" replaces "dn1" with "peer" and "dn2" with "client".
+      maps:
+         groups:
+            - name:
+              value:
 
 #############################################################################
-#  Affiliation section
+# Affiliations section. Fabric CA server can be bootstrapped with the
+# affiliations specified in this section. Affiliations are specified as maps.
+# For example:
+#   businessunit1:
+#     department1:
+#       - team1
+#   businessunit2:
+#     - department2
+#     - department3
+#
+# Affiliations are hierarchical in nature. In the above example,
+# department1 (used as businessunit1.department1) is the child of businessunit1.
+# team1 (used as businessunit1.department1.team1) is the child of department1.
+# department2 (used as businessunit2.department2) and department3 (businessunit2.department3)
+# are children of businessunit2.
+# Note: Affiliations are case sensitive except for the non-leaf affiliations
+# (like businessunit1, department1, businessunit2) that are specified in the configuration file,
+# which are always stored in lower case.
 #############################################################################
 affiliations:
    org1:
@@ -225,6 +297,9 @@ affiliations:
 #  A maxpathlen of 0 means that the intermediate CA cannot issue other
 #  intermediate CA certificates, though it can still issue end entity certificates.
 #  (See RFC 5280, section 4.2.1.9)
+#
+#  The "tls" profile subsection is used to sign TLS certificate requests;
+#  the default expiration ("expiry" field) is "8760h", which is 1 year in hours.
 #############################################################################
 signing:
     default:
@@ -235,10 +310,19 @@ signing:
       ca:
          usage:
            - cert sign
+           - crl sign
          expiry: 43800h
          caconstraint:
            isca: true
            maxpathlen: 0
+      tls:
+         usage:
+            - signing
+            - key encipherment
+            - server auth
+            - client auth
+            - key agreement
+         expiry: 8760h
 
 ###########################################################################
 #  Certificate Signing Request (CSR) section.
@@ -364,37 +448,36 @@ intermediate:
 )
 
 var (
-	// cfgFileName is the name of the config file
-	cfgFileName string
-	// serverCfg is the server's config
-	serverCfg *lib.ServerConfig
+	extraArgsError = "Unrecognized arguments found: %v\n\n%s"
 )
 
 // Initialize config
-func configInit() (err error) {
-
-	// Make the config file name absolute
-	if !filepath.IsAbs(cfgFileName) {
-		cfgFileName, err = filepath.Abs(cfgFileName)
-		if err != nil {
-			return fmt.Errorf("Failed to get full path of config file: %s", err)
-		}
+func (s *ServerCmd) configInit() (err error) {
+	if !s.configRequired() {
+		return nil
 	}
 
+	s.cfgFileName, s.homeDirectory, err = util.ValidateAndReturnAbsConf(s.cfgFileName, s.homeDirectory, cmdName)
+	if err != nil {
+		return err
+	}
+
+	log.Debugf("Home directory: %s", s.homeDirectory)
+
 	// If the config file doesn't exist, create a default one
-	if !util.FileExists(cfgFileName) {
-		err = createDefaultConfigFile()
+	if !util.FileExists(s.cfgFileName) {
+		err = s.createDefaultConfigFile()
 		if err != nil {
-			return fmt.Errorf("Failed to create default configuration file: %s", err)
+			return errors.WithMessage(err, "Failed to create default configuration file")
 		}
-		log.Infof("Created default configuration file at %s", cfgFileName)
+		log.Infof("Created default configuration file at %s", s.cfgFileName)
 	} else {
-		log.Infof("Configuration file location: %s", cfgFileName)
+		log.Infof("Configuration file location: %s", s.cfgFileName)
 	}
 
 	// Read the config
-	viper.AutomaticEnv() // read in environment variables that match
-	err = lib.UnmarshalConfig(serverCfg, viper.GetViper(), cfgFileName, true, true)
+	s.myViper.AutomaticEnv() // read in environment variables that match
+	err = lib.UnmarshalConfig(s.cfg, s.myViper, s.cfgFileName, true)
 	if err != nil {
 		return err
 	}
@@ -403,26 +486,26 @@ func configInit() (err error) {
 	// certificates. If it is explicitly set to 0, set the PathLenZero field to
 	// true as CFSSL expects.
 	pl := "csr.ca.pathlength"
-	if viper.IsSet(pl) && viper.GetInt(pl) == 0 {
-		serverCfg.CAcfg.CSR.CA.PathLenZero = true
+	if s.myViper.IsSet(pl) && s.myViper.GetInt(pl) == 0 {
+		s.cfg.CAcfg.CSR.CA.PathLenZero = true
 	}
 	// The maxpathlen field controls how deep the CA hierarchy when issuing
 	// a CA certificate. If it is explicitly set to 0, set the PathLenZero
 	// field to true as CFSSL expects.
 	pl = "signing.profiles.ca.caconstraint.maxpathlen"
-	if viper.IsSet(pl) && viper.GetInt(pl) == 0 {
-		serverCfg.CAcfg.Signing.Profiles["ca"].CAConstraint.MaxPathLenZero = true
+	if s.myViper.IsSet(pl) && s.myViper.GetInt(pl) == 0 {
+		s.cfg.CAcfg.Signing.Profiles["ca"].CAConstraint.MaxPathLenZero = true
 	}
 
 	return nil
 }
 
-func createDefaultConfigFile() error {
+func (s *ServerCmd) createDefaultConfigFile() error {
 	var user, pass string
 	// If LDAP is enabled, authentication of enrollment requests are performed
 	// by using LDAP authentication; therefore, no bootstrap username and password
 	// are required.
-	ldapEnabled := viper.GetBool("ldap.enabled")
+	ldapEnabled := s.myViper.GetBool("ldap.enabled")
 	if !ldapEnabled {
 		// When LDAP is disabled, the fabric-ca-server functions as its own
 		// identity registry; therefore, we require that the default configuration
@@ -430,13 +513,13 @@ func createDefaultConfigFile() error {
 		// bootstrap administrator.  Other identities can be dynamically registered.
 		// Create the default config, but only if they provided this bootstrap
 		// username and password.
-		up := viper.GetString("boot")
+		up := s.myViper.GetString("boot")
 		if up == "" {
 			return errors.New("The '-b user:pass' option is required")
 		}
 		ups := strings.Split(up, ":")
 		if len(ups) < 2 {
-			return fmt.Errorf("The value '%s' on the command line is missing a colon separator", up)
+			return errors.Errorf("The value '%s' on the command line is missing a colon separator", up)
 		}
 		if len(ups) > 2 {
 			ups = []string{ups[0], strings.Join(ups[1:], ":")}
@@ -444,7 +527,7 @@ func createDefaultConfigFile() error {
 		user = ups[0]
 		pass = ups[1]
 		if len(user) >= 1024 {
-			return fmt.Errorf("The identity name must be less than 1024 characters: '%s'", user)
+			return errors.Errorf("The identity name must be less than 1024 characters: '%s'", user)
 		}
 		if len(pass) == 0 {
 			return errors.New("An empty password in the '-b user:pass' option is not permitted")
@@ -459,10 +542,11 @@ func createDefaultConfigFile() error {
 	}
 
 	// Do string subtitution to get the default config
-	cfg := strings.Replace(defaultCfgTemplate, "<<<ADMIN>>>", user, 1)
+	cfg := strings.Replace(defaultCfgTemplate, "<<<VERSION>>>", metadata.Version, 1)
+	cfg = strings.Replace(cfg, "<<<ADMIN>>>", user, 1)
 	cfg = strings.Replace(cfg, "<<<ADMINPW>>>", pass, 1)
 	cfg = strings.Replace(cfg, "<<<MYHOST>>>", myhost, 1)
-	purl := viper.GetString("intermediate.parentserver.url")
+	purl := s.myViper.GetString("intermediate.parentserver.url")
 	log.Debugf("parent server URL: '%s'", purl)
 	if purl == "" {
 		// This is a root CA
@@ -475,32 +559,12 @@ func createDefaultConfigFile() error {
 	}
 
 	// Now write the file
-	cfgDir := filepath.Dir(cfgFileName)
+	cfgDir := filepath.Dir(s.cfgFileName)
 	err = os.MkdirAll(cfgDir, 0755)
 	if err != nil {
 		return err
 	}
 
 	// Now write the file
-	return ioutil.WriteFile(cfgFileName, []byte(cfg), 0644)
-}
-
-// getCAName returns CA Name
-// If ca.name property is specified (via the environment variable
-// 'FABRIC_CA_SERVER_CA_NAME' or the command line option '--ca.name' or
-// in the configuration file), then its value is returned
-// If ca.name property is not specified, domain is extracted from the hostname and is
-// returned
-// If domain is empty, then hostname is returned
-func getCAName(hostname string) (caName string) {
-	caName = viper.GetString("ca.name")
-	if caName != "" {
-		return caName
-	}
-
-	caName = strings.Join(strings.Split(hostname, ".")[1:], ".")
-	if caName == "" {
-		caName = hostname
-	}
-	return caName
+	return ioutil.WriteFile(s.cfgFileName, []byte(cfg), 0644)
 }

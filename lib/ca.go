@@ -17,37 +17,43 @@ limitations under the License.
 package lib
 
 import (
+	"bytes"
 	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 
 	"github.com/cloudflare/cfssl/config"
 	cfcsr "github.com/cloudflare/cfssl/csr"
 	"github.com/cloudflare/cfssl/initca"
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/signer"
-	"github.com/jmoiron/sqlx"
+	cflocalsigner "github.com/cloudflare/cfssl/signer/local"
+	
 	"github.com/tjfoc/fabric-ca-gm/api"
 	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
 	"github.com/tjfoc/fabric-ca-gm/lib/ldap"
+	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
 	"github.com/tjfoc/fabric-ca-gm/lib/spi"
 	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
 	"github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/tjfoc/gmsm/sm2"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/gm"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/common/attrmgr"
+	"github.com/hyperledger/fabric/bccsp/gm"
+	"github.com/jmoiron/sqlx"
 
 	_ "github.com/go-sql-driver/mysql" // import to support MySQL
 	_ "github.com/lib/pq"              // import to support Postgres
@@ -56,6 +62,9 @@ import (
 
 const (
 	defaultDatabaseType = "sqlite3"
+	// CAChainParentFirstEnvVar is the name of the environment variable that needs to be set
+	// for server to return CA chain in parent-first order
+	CAChainParentFirstEnvVar = "CA_CHAIN_PARENT_FIRST"
 )
 
 var (
@@ -89,25 +98,37 @@ type CA struct {
 	enrollSigner signer.Signer
 	// The options to use in verifying a signature in token-based authentication
 	verifyOptions *x509.VerifyOptions
+	// The attribute manager
+	attrMgr *attrmgr.Mgr
 	// The tcert manager for this CA
 	tcertMgr *tcert.Mgr
 	// The key tree
 	keyTree *tcert.KeyTree
 	// The server hosting this CA
 	server *Server
+	// Indicates if database was successfully initialized
+	dbInitialized bool
+	// DB levels
+	levels *dbutil.Levels
+	// CA mutex
+	mutex sync.Mutex
 }
 
 const (
 	certificateError = "Invalid certificate in file"
 )
 
-// NewCA creates a new CA with the specified
+// newCA creates a new CA with the specified
 // home directory, parent server URL, and config
-func NewCA(caFile string, config *CAConfig, server *Server, renew bool) (*CA, error) {
+func newCA(caFile string, config *CAConfig, server *Server, renew bool) (*CA, error) {
 	ca := new(CA)
 	ca.ConfigFilePath = caFile
 	err := initCA(ca, filepath.Dir(caFile), config, server, renew)
 	if err != nil {
+		err2 := ca.closeDB()
+		if err2 != nil {
+			log.Errorf("Close DB failed: %s", err2)
+		}
 		return nil, err
 	}
 	return ca, nil
@@ -131,38 +152,39 @@ func initCA(ca *CA, homeDir string, config *CAConfig, server *Server, renew bool
 func (ca *CA) init(renew bool) (err error) {
 	log.Debugf("Init CA with home %s and config %+v", ca.HomeDir, *ca.Config)
 	// Initialize the config, setting defaults, etc
+	ca.dbInitialized = false
 	log.Info("#################name = ", ca.Config.CSP.ProviderName)
 	SetProviderName(ca.Config.CSP.ProviderName)
 	err = ca.initConfig()
 	if err != nil {
 		return err
 	}
-	log.Infof("xxx xxxxxxxxxxxxx ca.go InitBCCSP")
 	// Initialize the crypto layer (BCCSP) for this CA
 	ca.csp, err = util.InitBCCSP(&ca.Config.CSP, "", ca.HomeDir)
 	if err != nil {
 		return err
 	}
-
-	log.Infof("xxx xxxxxxxxxxxxx ca.go initKeyMaterial,renew=%t", renew)
 	// Initialize key materials
 	err = ca.initKeyMaterial(renew)
 	if err != nil {
 		return err
 	}
-	log.Infof("xxx xxxxxxxxxxxxx ca.go initDB")
 	// Initialize the database
 	err = ca.initDB()
 	if err != nil {
-		return err
+		log.Error("Error occurred initializing database: ", err)
+		// Return if a server configuration error encountered (e.g. Invalid max enrollment for a bootstrap user)
+		if isFatalError(err) {
+			return err
+		}
 	}
-	log.Infof("xxx xxxxxxxxxxxxx ca.go initEnrollmentSigner")
 	// Initialize the enrollment signer
 	err = ca.initEnrollmentSigner()
 	if err != nil {
 		return err
 	}
-	log.Infof("xxx xxxxxxxxxxxxx ca.go TCert handling")
+	// Create the attribute manager
+	ca.attrMgr = attrmgr.New()
 	// Initialize TCert handling
 	keyfile := ca.Config.CA.Keyfile
 	certfile := ca.Config.CA.Certfile
@@ -171,7 +193,6 @@ func (ca *CA) init(renew bool) (err error) {
 		return err
 	}
 	// FIXME: The root prekey must be stored persistently in DB and retrieved here if not found
-	log.Infof("xxx xxxxxxxxxxxxx ca.go genRootKey and NewKeyTree")
 	rootKey, err := genRootKey(ca.csp)
 	if err != nil {
 		return err
@@ -200,17 +221,13 @@ func (ca *CA) initKeyMaterial(renew bool) error {
 		// If they both exist, the CA was already initialized
 		keyFileExists := util.FileExists(keyFile)
 		certFileExists := util.FileExists(certFile)
-
-		log.Infof("xxxx keyFileExists [%s] exist? [%v]", keyFile, keyFileExists)
-		log.Infof("xxxx certFileExists [%s] exist? [%v]", certFile, certFileExists)
-
 		if keyFileExists && certFileExists {
 			log.Info("The CA key and certificate files already exist")
 			log.Infof("Key file location: %s", keyFile)
 			log.Infof("Certificate file location: %s", certFile)
-			err = ca.validateCert(certFile, keyFile)
+			err = ca.validateCertAndKey(certFile, keyFile)
 			if err != nil {
-				return fmt.Errorf("Validation of certificate and key failed: %s", err)
+				return errors.WithMessage(err, "Validation of certificate and key failed")
 			}
 			// Load CN from existing enrollment information and set CSR accordingly
 			// CN needs to be set, having a multi CA setup requires a unique CN and can't
@@ -226,24 +243,24 @@ func (ca *CA) initKeyMaterial(renew bool) error {
 		// stored by BCCSP, so check for that now.
 		if certFileExists {
 			_, _, _, err = util.GetSignerFromCertFile(certFile, ca.csp)
-			if err == nil {
-				// Yes, it is stored by BCCSP
-				log.Info("The CA key and certificate already exist")
-				log.Infof("The key is stored by BCCSP provider '%s'", ca.Config.CSP.ProviderName)
-				log.Infof("The certificate is at: %s", certFile)
-				// Load CN from existing enrollment information and set CSR accordingly
-				// CN needs to be set, having a multi CA setup requires a unique CN and can't
-				// be left blank
-				ca.Config.CSR.CN, err = ca.loadCNFromEnrollmentInfo(certFile)
-				if err != nil {
-					return err
-				}
-				return nil
+			if err != nil {
+				return errors.WithMessage(err, fmt.Sprintf("Failed to find private key for certificate in '%s'", certFile))
 			}
+			// Yes, it is stored by BCCSP
+			log.Info("The CA key and certificate already exist")
+			log.Infof("The key is stored by BCCSP provider '%s'", ca.Config.CSP.ProviderName)
+			log.Infof("The certificate is at: %s", certFile)
+			// Load CN from existing enrollment information and set CSR accordingly
+			// CN needs to be set, having a multi CA setup requires a unique CN and can't
+			// be left blank
+			ca.Config.CSR.CN, err = ca.loadCNFromEnrollmentInfo(certFile)
+			if err != nil {
+				return errors.WithMessage(err, fmt.Sprintf("Failed to get CN for certificate in '%s'", certFile))
+			}
+			return nil
 		}
 	}
 
-	log.Info("xxxx getCACert and store ca cert")
 	// Get the CA cert
 	cert, err := ca.getCACert()
 	if err != nil {
@@ -252,7 +269,7 @@ func (ca *CA) initKeyMaterial(renew bool) error {
 	// Store the certificate to file
 	err = writeFile(certFile, cert, 0644)
 	if err != nil {
-		return fmt.Errorf("Failed to store certificate: %s", err)
+		return errors.Wrap(err, "Failed to store certificate")
 	}
 	log.Infof("The CA key and certificate were generated for CA %s", ca.Config.CA.Name)
 	log.Infof("The key was stored by BCCSP provider '%s'", ca.Config.CSP.ProviderName)
@@ -262,10 +279,10 @@ func (ca *CA) initKeyMaterial(renew bool) error {
 
 // Get the CA certificate for this CA
 func (ca *CA) getCACert() (cert []byte, err error) {
-	log.Debugf("Getting CA cert; parent server URL is '%s'", ca.Config.Intermediate.ParentServer.URL)
 	if ca.Config.Intermediate.ParentServer.URL != "" {
 		// This is an intermediate CA, so call the parent fabric-ca-server
 		// to get the cert
+		log.Debugf("Getting CA cert; parent server URL is %s", util.GetMaskedURL(ca.Config.Intermediate.ParentServer.URL))
 		clientCfg := ca.Config.Client
 		if clientCfg == nil {
 			clientCfg = &ClientConfig{}
@@ -276,8 +293,9 @@ func (ca *CA) getCACert() (cert []byte, err error) {
 		clientCfg.CAName = ca.Config.Intermediate.ParentServer.CAName
 		clientCfg.CSP = ca.Config.CSP
 		clientCfg.CSR = ca.Config.CSR
+		clientCfg.CSP = ca.Config.CSP
 		if ca.Config.CSR.CN != "" {
-			return nil, fmt.Errorf("CN '%s' cannot be specified for an intermediate CA. Remove CN from CSR section for enrollment of intermediate CA to be successful", ca.Config.CSR.CN)
+			return nil, errors.Errorf("CN '%s' cannot be specified for an intermediate CA. Remove CN from CSR section for enrollment of intermediate CA to be successful", ca.Config.CSR.CN)
 		}
 		if clientCfg.Enrollment.Profile == "" {
 			clientCfg.Enrollment.Profile = "ca"
@@ -285,7 +303,11 @@ func (ca *CA) getCACert() (cert []byte, err error) {
 		if clientCfg.Enrollment.CSR == nil {
 			clientCfg.Enrollment.CSR = &api.CSRInfo{}
 		}
-		log.Debugf("Intermediate enrollment request: %v", clientCfg.Enrollment)
+		if clientCfg.Enrollment.CSR.CA == nil {
+			clientCfg.Enrollment.CSR.CA = &cfcsr.CAConfig{PathLength: 0, PathLenZero: true}
+		}
+		log.Debugf("Intermediate enrollment request: %+v, CSR: %+v, CA: %+v",
+			clientCfg.Enrollment, clientCfg.Enrollment.CSR, clientCfg.Enrollment.CSR.CA)
 		var resp *EnrollmentResponse
 		resp, err = clientCfg.Enroll(ca.Config.Intermediate.ParentServer.URL, ca.HomeDir)
 		if err != nil {
@@ -300,21 +322,17 @@ func (ca *CA) getCACert() (cert []byte, err error) {
 		cert = ecert.Cert()
 		// Store the chain file as the concatenation of the parent's chain plus the cert.
 		chainPath := ca.Config.CA.Chainfile
-		if chainPath == "" {
-			chainPath, err = util.MakeFileAbs("ca-chain.pem", ca.HomeDir)
-			if err != nil {
-				return nil, fmt.Errorf("Failed to create intermediate chain file path: %s", err)
-			}
-			ca.Config.CA.Chainfile = chainPath
+		chain, err := ca.concatChain(resp.ServerInfo.CAChain, cert)
+		if err != nil {
+			return nil, err
 		}
-		chain := ca.concatChain(resp.ServerInfo.CAChain, cert)
 		err = os.MkdirAll(path.Dir(chainPath), 0755)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to create intermediate chain file directory: %s", err)
+			return nil, errors.Wrap(err, "Failed to create intermediate chain file directory")
 		}
 		err = util.WriteFile(chainPath, chain, 0644)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to create intermediate chain file: %s", err)
+			return nil, errors.WithMessage(err, "Failed to create intermediate chain file")
 		}
 		log.Debugf("Stored intermediate certificate chain at %s", chainPath)
 	} else {
@@ -356,18 +374,34 @@ func (ca *CA) getCACert() (cert []byte, err error) {
 			cert, _, err = initca.NewFromSigner(&req, cspSigner)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("Failed to create new CA certificate: %s", err)
+			return nil, errors.WithMessage(err, "Failed to create new CA certificate")
 		}
 	}
 	return cert, nil
 }
 
 // Return a certificate chain which is the concatenation of chain and cert
-func (ca *CA) concatChain(chain []byte, cert []byte) []byte {
+func (ca *CA) concatChain(chain []byte, cert []byte) ([]byte, error) {
 	result := make([]byte, len(chain)+len(cert))
-	copy(result[:len(chain)], chain)
-	copy(result[len(chain):], cert)
-	return result
+	parentFirst, ok := os.LookupEnv(CAChainParentFirstEnvVar)
+	parentFirstBool := false
+	// If CA_CHAIN_PARENT_FIRST env variable is set then get the boolean
+	// value
+	if ok {
+		var err error
+		parentFirstBool, err = strconv.ParseBool(parentFirst)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to parse the environment variable '%s'", CAChainParentFirstEnvVar)
+		}
+	}
+	if parentFirstBool {
+		copy(result[:len(chain)], chain)
+		copy(result[len(chain):], cert)
+	} else {
+		copy(result[:len(cert)], cert)
+		copy(result[len(cert):], chain)
+	}
+	return result, nil
 }
 
 // Get the certificate chain for the CA
@@ -386,7 +420,7 @@ func (ca *CA) getCAChain() (chain []byte, err error) {
 	}
 	// If this is an intermediate CA but the ca.Chainfile doesn't exist,
 	// it is an error.  It should have been created during intermediate CA enrollment.
-	return nil, fmt.Errorf("Chain file does not exist at %s", certAuth.Chainfile)
+	return nil, errors.Errorf("Chain file does not exist at %s", certAuth.Chainfile)
 }
 
 // Initialize the configuration for the CA setting any defaults and making filenames absolute
@@ -395,7 +429,7 @@ func (ca *CA) initConfig() (err error) {
 	if ca.HomeDir == "" {
 		ca.HomeDir, err = os.Getwd()
 		if err != nil {
-			return fmt.Errorf("Failed to initialize CA's home directory: %s", err)
+			return errors.Wrap(err, "Failed to initialize CA's home directory")
 		}
 	}
 	log.Debugf("CA Home Directory: %s", ca.HomeDir)
@@ -406,11 +440,20 @@ func (ca *CA) initConfig() (err error) {
 	}
 	// Set config defaults
 	cfg := ca.Config
+	if cfg.Version == "" {
+		cfg.Version = "0"
+	}
 	if cfg.CA.Certfile == "" {
 		cfg.CA.Certfile = "ca-cert.pem"
 	}
 	if cfg.CA.Keyfile == "" {
 		cfg.CA.Keyfile = "ca-key.pem"
+	}
+	if cfg.CA.Chainfile == "" {
+		cfg.CA.Chainfile = "ca-chain.pem"
+	}
+	if cfg.CA.Chainfile == "" {
+		cfg.CA.Chainfile = "ca-chain.pem"
 	}
 	if cfg.CSR.CA == nil {
 		cfg.CSR.CA = &cfcsr.CAConfig{}
@@ -434,8 +477,17 @@ func (ca *CA) initConfig() (err error) {
 		&cs.Default,
 		defaultIssuedCertificateExpiration,
 		false)
+	tlsProfile := cs.Profiles["tls"]
+	initSigningProfile(&tlsProfile,
+		defaultIssuedCertificateExpiration,
+		false)
+	cs.Profiles["tls"] = tlsProfile
+	err = ca.checkConfigLevels()
+	if err != nil {
+		return err
+	}
 	// Set log level if debug is true
-	if ca.server.Config.Debug {
+	if ca.server != nil && ca.server.Config != nil && ca.server.Config.Debug {
 		log.Level = log.LevelDebug
 	}
 	ca.normalizeStringSlices()
@@ -477,11 +529,11 @@ func (ca *CA) VerifyCertificate(cert *x509.Certificate) error {
 	sm2Cert := gm.ParseX509Certificate2Sm2(cert)
 	opts, err := getVerifyOptions(ca)
 	if err != nil {
-		return fmt.Errorf("Failed to get verify options: %s", err)
+		return errors.WithMessage(err, "Failed to get verify options")
 	}
 	_, err = sm2Cert.Verify(*opts)
 	if err != nil {
-		return fmt.Errorf("Failed to verify certificate: %s", err)
+		return errors.WithMessage(err, "Failed to verify certificate")
 	}
 	return nil
 }
@@ -495,23 +547,43 @@ func (ca *CA) getVerifyOptions() (*x509.VerifyOptions, error) {
 	if err != nil {
 		return nil, err
 	}
-	block, rest := pem.Decode(chain)
-	if block == nil {
-		return nil, errors.New("No root certificate was found")
-	}
-	rootCert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to parse root certificate: %s", err)
-	}
-	rootPool := x509.NewCertPool()
-	rootPool.AddCert(rootCert)
 	var intPool *x509.CertPool
-	if len(rest) > 0 {
-		intPool = x509.NewCertPool()
-		if !intPool.AppendCertsFromPEM(rest) {
-			return nil, errors.New("Failed to add intermediate PEM certificates")
+	var rootPool *x509.CertPool
+
+	for len(chain) > 0 {
+		var block *pem.Block
+		block, chain = pem.Decode(chain)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, errors.Wrap(err, "Failed to parse CA chain certificate")
+		}
+
+		if !cert.IsCA {
+			return nil, errors.New("A certificate in the CA chain is not a CA certificate")
+		}
+
+		// If authority key id is not present or if it is present and equal to subject key id,
+		// then it is a root certificate
+		if len(cert.AuthorityKeyId) == 0 || bytes.Equal(cert.AuthorityKeyId, cert.SubjectKeyId) {
+			if rootPool == nil {
+				rootPool = x509.NewCertPool()
+			}
+			rootPool.AddCert(cert)
+		} else {
+			if intPool == nil {
+				intPool = x509.NewCertPool()
+			}
+			intPool.AddCert(cert)
 		}
 	}
+
 	ca.verifyOptions = &x509.VerifyOptions{
 		Roots:         rootPool,
 		Intermediates: intPool,
@@ -522,10 +594,24 @@ func (ca *CA) getVerifyOptions() (*x509.VerifyOptions, error) {
 
 // Initialize the database for the CA
 func (ca *CA) initDB() error {
-	db := &ca.Config.DB
+	log.Debug("Initializing DB")
 
+	// If DB is initialized, don't need to proceed further
+	if ca.dbInitialized {
+		return nil
+	}
+
+	ca.mutex.Lock()
+	defer ca.mutex.Unlock()
+
+	// After obtaining a lock, check again to see if DB got initialized by another process
+	if ca.dbInitialized {
+		return nil
+	}
+
+	db := &ca.Config.DB
+	dbError := false
 	var err error
-	var exists bool
 
 	if db.Type == "" || db.Type == defaultDatabaseType {
 
@@ -543,58 +629,98 @@ func (ca *CA) initDB() error {
 
 	// Strip out user:pass from datasource for logging
 	ds := db.Datasource
-	dsParts := strings.Split(ds, "@")
-	if len(dsParts) > 1 {
-		ds = fmt.Sprintf("*****:*****@%s", dsParts[len(dsParts)-1])
-	}
+	ds = dbutil.MaskDBCred(ds)
+
+	log.Debugf("Initializing '%s' database at '%s'", db.Type, ds)
 
 	switch db.Type {
 	case defaultDatabaseType:
-		ca.db, exists, err = dbutil.NewUserRegistrySQLLite3(db.Datasource)
+		ca.db, err = dbutil.NewUserRegistrySQLLite3(db.Datasource)
 		if err != nil {
-			return err
+			return errors.WithMessage(err, "Failed to create user registry for SQLite")
 		}
 	case "postgres":
-		ca.db, exists, err = dbutil.NewUserRegistryPostgres(db.Datasource, &db.TLS)
+		ca.db, err = dbutil.NewUserRegistryPostgres(db.Datasource, &db.TLS)
 		if err != nil {
-			return err
+			return errors.WithMessage(err, "Failed to create user registry for PostgreSQL")
 		}
 	case "mysql":
-		ca.db, exists, err = dbutil.NewUserRegistryMySQL(db.Datasource, &db.TLS, ca.csp)
+		ca.db, err = dbutil.NewUserRegistryMySQL(db.Datasource, &db.TLS, ca.csp)
 		if err != nil {
-			return err
+			return errors.WithMessage(err, "Failed to create user registry for MySQL")
 		}
 	default:
-		return fmt.Errorf("Invalid db.type in config file: '%s'; must be 'sqlite3', 'postgres', or 'mysql'", db.Type)
+		return errors.Errorf("Invalid db.type in config file: '%s'; must be 'sqlite3', 'postgres', or 'mysql'", db.Type)
+	}
+
+	// Update the database to use the latest schema
+	err = dbutil.UpdateSchema(ca.db, ca.server.levels)
+	if err != nil {
+		return errors.Wrap(err, "Failed to update schema")
 	}
 
 	// Set the certificate DB accessor
-	ca.certDBAccessor = NewCertDBAccessor(ca.db)
+	ca.certDBAccessor = NewCertDBAccessor(ca.db, ca.levels.Certificate)
 
-	// Initialize the user registry.
-	// If LDAP is not configured, the fabric-ca CA functions as a user
-	// registry based on the database.
+	// If DB initialization fails and we need to reinitialize DB, need to make sure to set the DB accessor for the signer
+	if ca.enrollSigner != nil {
+		ca.enrollSigner.SetDBAccessor(ca.certDBAccessor)
+	}
+
+	// Initialize user registry to either use DB or LDAP
 	err = ca.initUserRegistry()
 	if err != nil {
 		return err
 	}
 
-	// If the DB doesn't exist, bootstrap it
-	if !exists {
-		// Since users come from LDAP when enabled,
-		// load them from the config file only when LDAP is disabled
-		if !ca.Config.LDAP.Enabled {
-			err = ca.loadUsersTable()
-			if err != nil {
-				return err
-			}
-		}
-		err = ca.loadAffiliationsTable()
+	// If not using LDAP, migrate database if needed to latest version and load the users and affiliations table
+	if !ca.Config.LDAP.Enabled {
+		err = ca.checkDBLevels()
 		if err != nil {
 			return err
 		}
+
+		err = ca.loadUsersTable()
+		if err != nil {
+			log.Error(err)
+			dbError = true
+			if isFatalError(err) {
+				return err
+			}
+		}
+
+		err = ca.loadAffiliationsTable()
+		if err != nil {
+			log.Error(err)
+			dbError = true
+		}
+
+		err = ca.performMigration()
+		if err != nil {
+			log.Error(err)
+			dbError = true
+		}
 	}
-	log.Infof("Initialized %s database at %s", db.Type, db.Datasource)
+
+	if dbError {
+		return errors.Errorf("Failed to initialize %s database at %s ", db.Type, ds)
+	}
+
+	ca.dbInitialized = true
+	log.Infof("Initialized %s database at %s", db.Type, ds)
+
+	return nil
+}
+
+// Close CA's DB
+func (ca *CA) closeDB() error {
+	if ca.db != nil {
+		err := ca.db.Close()
+		ca.db = nil
+		if err != nil {
+			return errors.Wrapf(err, "Failed to close CA database, where CA home directory is '%s'", ca.HomeDir)
+		}
+	}
 	return nil
 }
 
@@ -646,19 +772,17 @@ func (ca *CA) initEnrollmentSigner() (err error) {
 	if parentServerURL != "" {
 		err = policy.OverrideRemotes(parentServerURL)
 		if err != nil {
-			return fmt.Errorf("Failed initializing enrollment signer: %s", err)
+			return errors.Wrap(err, "Failed initializing enrollment signer")
 		}
 	}
 
 	ca.enrollSigner, err = util.BccspBackedSigner(c.CA.Certfile, c.CA.Keyfile, policy, ca.csp)
-
 	if err != nil {
 		return err
 	}
 	ca.enrollSigner.SetDBAccessor(ca.certDBAccessor)
 
 	// Successful enrollment
-	log.Info("xxxx Successful enrollment")
 	return nil
 }
 
@@ -670,7 +794,7 @@ func (ca *CA) loadUsersTable() error {
 		log.Debugf("Loading identity '%s'", id.Name)
 		err := ca.addIdentity(&id, false)
 		if err != nil {
-			return err
+			return errors.WithMessage(err, "Failed to load identity table")
 		}
 	}
 	log.Debug("Successfully loaded identity table")
@@ -681,10 +805,10 @@ func (ca *CA) loadUsersTable() error {
 func (ca *CA) loadAffiliationsTable() error {
 	log.Debug("Loading affiliations table")
 	err := ca.loadAffiliationsTableR(ca.Config.Affiliations, "")
-	if err == nil {
-		log.Debug("Successfully loaded affiliations table")
+	if err != nil {
+		return errors.WithMessage(err, "Failed to load affiliations table")
 	}
-	log.Debug("Successfully loaded groups table")
+	log.Debug("Successfully loaded affiliations table")
 	return nil
 }
 
@@ -737,15 +861,15 @@ func (ca *CA) addIdentity(id *CAConfigIdentity, errIfFound bool) error {
 	user, _ := ca.registry.GetUser(id.Name, nil)
 	if user != nil {
 		if errIfFound {
-			return fmt.Errorf("Identity '%s' is already registered", id.Name)
+			return errors.Errorf("Identity '%s' is already registered", id.Name)
 		}
-		log.Debugf("Loaded identity: %+v", id)
+		log.Debugf("Identity '%s' already registered, loaded identity", user.GetName())
 		return nil
 	}
 
 	id.MaxEnrollments, err = getMaxEnrollments(id.MaxEnrollments, ca.Config.Registry.MaxEnrollments)
 	if err != nil {
-		return err
+		return newFatalError(ErrConfig, "Configuration Error: %s", err)
 	}
 
 	rec := spi.UserInfo{
@@ -755,18 +879,18 @@ func (ca *CA) addIdentity(id *CAConfigIdentity, errIfFound bool) error {
 		Affiliation:    id.Affiliation,
 		Attributes:     ca.convertAttrs(id.Attrs),
 		MaxEnrollments: id.MaxEnrollments,
+		Level:          ca.levels.Identity,
 	}
-	err = ca.registry.InsertUser(rec)
+	err = ca.registry.InsertUser(&rec)
 	if err != nil {
-		return fmt.Errorf("Failed to insert identity '%s': %s", id.Name, err)
+		return errors.WithMessage(err, fmt.Sprintf("Failed to insert identity '%s'", id.Name))
 	}
 	log.Debugf("Registered identity: %+v", id)
 	return nil
 }
 
 func (ca *CA) addAffiliation(path, parentPath string) error {
-	log.Debugf("Adding affiliation %s", path)
-	return ca.registry.InsertAffiliation(path, parentPath)
+	return ca.registry.InsertAffiliation(path, parentPath, ca.levels.Affiliation)
 }
 
 // CertDBAccessor returns the certificate DB accessor for CA
@@ -788,27 +912,6 @@ func (ca *CA) convertAttrs(inAttrs map[string]string) []api.Attribute {
 		})
 	}
 	return outAttrs
-}
-
-// Get max enrollments relative to the configured max
-func (ca *CA) getMaxEnrollments(requestedMax int) (int, error) {
-	configuredMax := ca.Config.Registry.MaxEnrollments
-	if requestedMax < 0 {
-		return configuredMax, nil
-	}
-	if configuredMax == 0 {
-		// no limit, so grant any request
-		return requestedMax, nil
-	}
-	if requestedMax == 0 && configuredMax != 0 {
-		return 0, fmt.Errorf("Infinite enrollments is not permitted; max is %d",
-			configuredMax)
-	}
-	if requestedMax > configuredMax {
-		return 0, fmt.Errorf("Max enrollments of %d is not permitted; max is %d",
-			requestedMax, configuredMax)
-	}
-	return requestedMax, nil
 }
 
 // Make all file names in the CA config absolute
@@ -856,7 +959,7 @@ func (ca *CA) userHasAttribute(username, attrname string) (string, error) {
 		return "", err
 	}
 	if val == "" {
-		return "", fmt.Errorf("Identity '%s' does not have attribute '%s'", username, attrname)
+		return "", errors.Errorf("Identity '%s' does not have attribute '%s'", username, attrname)
 	}
 	return val, nil
 }
@@ -871,12 +974,12 @@ func (ca *CA) attributeIsTrue(username, attrname string) error {
 	}
 	val2, err := strconv.ParseBool(val)
 	if err != nil {
-		return fmt.Errorf("Invalid value for attribute '%s' of identity '%s': %s", attrname, username, err)
+		return errors.Wrapf(err, "Invalid value for attribute '%s' of identity '%s'", attrname, username)
 	}
 	if val2 {
 		return nil
 	}
-	return fmt.Errorf("Attribute '%s' is not set to true for identity '%s'", attrname, username)
+	return errors.Errorf("Attribute '%s' is not set to true for identity '%s'", attrname, username)
 }
 
 // getUserAttrValue returns a user's value for an attribute
@@ -886,19 +989,22 @@ func (ca *CA) getUserAttrValue(username, attrname string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	attrval := user.GetAttribute(attrname)
+	attrval, err := user.GetAttribute(attrname)
+	if err != nil {
+		return "", errors.WithMessage(err, fmt.Sprintf("Failed to get attribute '%s' for user '%s'", attrname, user.GetName()))
+	}
 	log.Debugf("getUserAttrValue identity=%s, name=%s, value=%s", username, attrname, attrval)
-	return attrval, nil
+	return attrval.Value, nil
 }
 
 // getUserAffiliation returns a user's affiliation
 func (ca *CA) getUserAffiliation(username string) (string, error) {
 	log.Debugf("getUserAffilliation identity=%s", username)
-	user, err := ca.registry.GetUserInfo(username)
+	user, err := ca.registry.GetUser(username, nil)
 	if err != nil {
 		return "", err
 	}
-	aff := user.Affiliation
+	aff := GetUserAffiliation(user)
 	log.Debugf("getUserAffiliation identity=%s, aff=%s", username, aff)
 	return aff, nil
 }
@@ -915,42 +1021,65 @@ func (ca *CA) fillCAInfo(info *serverInfoResponseNet) error {
 }
 
 // Perfroms checks on the provided CA cert to make sure it's valid
-func (ca *CA) validateCert(certFile string, keyFile string) error {
+func (ca *CA) validateCertAndKey(certFile string, keyFile string) error {
 	log.Debug("Validating the CA certificate and key")
 	var err error
 	var certPEM []byte
 
 	certPEM, err = ioutil.ReadFile(certFile)
 	if err != nil {
-		return fmt.Errorf(certificateError+" '%s': %s", certFile, err)
+		return errors.Wrapf(err, certificateError+" '%s'", certFile)
 	}
 
 	cert, err := util.GetX509CertificateFromPEM(certPEM)
 	if err != nil {
-		return fmt.Errorf(certificateError+" '%s': %s", certFile, err)
+		return errors.WithMessage(err, fmt.Sprintf(certificateError+" '%s'", certFile))
 	}
 
 	if err = validateDates(cert); err != nil {
-		return fmt.Errorf(certificateError+" '%s': %s", certFile, err)
+		return errors.WithMessage(err, fmt.Sprintf(certificateError+" '%s'", certFile))
 	}
-	if err = validateUsage(cert); err != nil {
-		return fmt.Errorf(certificateError+" '%s': %s", certFile, err)
+	if err = validateUsage(cert, ca.Config.CA.Name); err != nil {
+		return errors.WithMessage(err, fmt.Sprintf(certificateError+" '%s'", certFile))
 	}
 	if err = validateIsCA(cert); err != nil {
-		return fmt.Errorf(certificateError+" '%s': %s", certFile, err)
+		return errors.WithMessage(err, fmt.Sprintf(certificateError+" '%s'", certFile))
 	}
 	if err = validateKeyType(cert); err != nil {
-		return fmt.Errorf(certificateError+" '%s': %s", certFile, err)
+		return errors.WithMessage(err, fmt.Sprintf(certificateError+" '%s'", certFile))
 	}
 	if err = validateKeySize(cert); err != nil {
-		return fmt.Errorf(certificateError+" '%s': %s", certFile, err)
+		return errors.WithMessage(err, fmt.Sprintf(certificateError+" '%s'", certFile))
 	}
 	if err = validateMatchingKeys(cert, keyFile); err != nil {
-		return fmt.Errorf("Invalid certificate and/or key in files '%s' and '%s': %s", certFile, keyFile, err)
+		return errors.WithMessage(err, fmt.Sprintf("Invalid certificate and/or key in files '%s' and '%s'", certFile, keyFile))
 	}
-	log.Debug("Validation of CA certificate and key successfull")
+	log.Debug("Validation of CA certificate and key successful")
 
 	return nil
+}
+
+// Returns expiration of the CA certificate
+func (ca *CA) getCACertExpiry() (time.Time, error) {
+	var caexpiry time.Time
+	signer, ok := ca.enrollSigner.(*cflocalsigner.Signer)
+	if ok {
+		cacert, err := signer.Certificate("", "ca")
+		if err != nil {
+			log.Errorf("Failed to get CA certificate for CA %s: %s", ca.Config.CA.Name, err)
+			return caexpiry, err
+		} else if cacert != nil {
+			caexpiry = cacert.NotAfter
+		}
+	} else {
+		log.Errorf("Not expected condition as the enrollSigner can only be cfssl/signer/local/Signer")
+		return caexpiry, errors.New("Unexpected error while getting CA certificate expiration")
+	}
+	return caexpiry, nil
+}
+
+func canSignCRL(cert *x509.Certificate) bool {
+	return cert.KeyUsage&x509.KeyUsageCRLSign != 0
 }
 
 func validateDates(cert *x509.Certificate) error {
@@ -971,7 +1100,7 @@ func validateDates(cert *x509.Certificate) error {
 	return nil
 }
 
-func validateUsage(cert *x509.Certificate) error {
+func validateUsage(cert *x509.Certificate, caName string) error {
 	log.Debug("Check CA certificate for valid usages")
 
 	if cert.KeyUsage == 0 {
@@ -979,9 +1108,12 @@ func validateUsage(cert *x509.Certificate) error {
 	}
 
 	if cert.KeyUsage&x509.KeyUsageCertSign == 0 {
-		return errors.New("'Cert Sign' key usage is required")
+		return errors.New("The 'cert sign' key usage is required")
 	}
 
+	if !canSignCRL(cert) {
+		log.Warningf("The CA certificate for the CA '%s' does not have 'crl sign' key usage, so the CA will not be able generate a CRL", caName)
+	}
 	return nil
 }
 
@@ -1021,16 +1153,14 @@ func validateKeySize(cert *x509.Certificate) error {
 }
 
 func validateMatchingKeys(cert *x509.Certificate, keyFile string) error {
-	log.Debug("Check that public key and private key matchSSSSSS")
+	log.Debug("Check that public key and private key match")
 
 	keyPEM, err := ioutil.ReadFile(keyFile)
 	if err != nil {
-		log.Debugf("Check that public key and private key match %s", err.Error())
 		return err
 	}
 
 	pubKey := cert.PublicKey
-	log.Debug("Check that public key and private key match1")
 	switch pubKey.(type) {
 	case *rsa.PublicKey:
 		privKey, err := util.GetRSAPrivateKey(keyPEM)
@@ -1084,6 +1214,103 @@ func (ca *CA) loadCNFromEnrollmentInfo(certFile string) (string, error) {
 	return name, nil
 }
 
+func (ca *CA) performMigration() error {
+	log.Debug("Checking and performing migration, if needed")
+
+	users, err := ca.registry.GetUserLessThanLevel(metadata.IdentityLevel)
+	if err != nil {
+		return err
+	}
+
+	for _, user := range users {
+		currentLevel := user.GetLevel()
+		if currentLevel < 1 {
+			err := ca.migrateUserToLevel1(user)
+			if err != nil {
+				return err
+			}
+			currentLevel++
+		}
+	}
+
+	sl, err := metadata.GetLevels(metadata.GetVersion())
+	if err != nil {
+		return err
+	}
+	err = dbutil.UpdateDBLevel(ca.db, sl)
+	if err != nil {
+		return errors.Wrap(err, "Failed to correctly update level of tables in the database")
+	}
+
+	return nil
+}
+
+// This function returns an error if the version specified in the configuration file is greater than the server version
+func (ca *CA) checkConfigLevels() error {
+	var err error
+	serverVersion := metadata.GetVersion()
+	configVersion := ca.Config.Version
+	log.Debugf("Checking configuration file version '%+v' against server version: '%+v'", configVersion, serverVersion)
+	// Check configuration file version against server version to make sure that newer configuration file is not being used with server
+	cmp, err := metadata.CmpVersion(configVersion, serverVersion)
+	if err != nil {
+		return errors.WithMessage(err, "Failed to compare version")
+	}
+	if cmp == -1 {
+		return fmt.Errorf("Configuration file version '%s' is higher than server version '%s'", configVersion, serverVersion)
+	}
+	cfg, err := metadata.GetLevels(ca.Config.Version)
+	if err != nil {
+		return err
+	}
+	ca.levels = cfg
+	return nil
+}
+
+func (ca *CA) checkDBLevels() error {
+	// Check database table levels against server levels to make sure that a database levels are compatible with server
+	levels, err := ca.registry.GetProperties([]string{"identity.level", "affiliation.level", "certificate.level"})
+	if err != nil {
+		return err
+	}
+	sl, err := metadata.GetLevels(metadata.GetVersion())
+	if err != nil {
+		return err
+	}
+	log.Debugf("Checking database levels '%+v' against server levels '%+v'", levels, sl)
+	idVer := getIntLevel(levels, "identity")
+	affVer := getIntLevel(levels, "affiliation")
+	certVer := getIntLevel(levels, "certificate")
+	if (idVer > sl.Identity) || (affVer > sl.Affiliation) || (certVer > sl.Certificate) {
+		return newFatalError(ErrDBLevel, "The version of the database is newer than the server version.  Upgrade your server.")
+	}
+	return nil
+}
+
+func (ca *CA) migrateUserToLevel1(user spi.User) error {
+	log.Debugf("Migrating user '%s' to level 1", user.GetName())
+
+	// Update identity to level 1
+	_, err := user.GetAttribute("hf.Registrar.Roles") // Check if user a registrar
+	if err == nil {
+		_, err := user.GetAttribute("hf.Registrar.Attributes") // Check if user already has "hf.Registrar.Attributes" attribute
+		if err != nil {
+			addAttr := []api.Attribute{api.Attribute{Name: "hf.Registrar.Attributes", Value: "*"}}
+			err := user.ModifyAttributes(addAttr)
+			if err != nil {
+				return errors.WithMessage(err, "Failed to set attribute")
+			}
+		}
+	}
+
+	err = user.SetLevel(1)
+	if err != nil {
+		return errors.WithMessage(err, "Failed to update level of user")
+	}
+
+	return nil
+}
+
 func writeFile(file string, buf []byte, perm os.FileMode) error {
 	err := os.MkdirAll(filepath.Dir(file), 0755)
 	if err != nil {
@@ -1114,9 +1341,26 @@ func initSigningProfile(spp **config.SigningProfile, expiry time.Duration, isCA 
 		*spp = sp
 	}
 	if sp.Usage == nil {
-		sp.Usage = []string{"cert sign"}
+		sp.Usage = []string{"cert sign", "crl sign"}
 	}
 	if sp.Expiry == 0 {
 		sp.Expiry = expiry
 	}
+	if sp.ExtensionWhitelist == nil {
+		sp.ExtensionWhitelist = map[string]bool{}
+	}
+	// This is set so that all profiles permit an attribute extension in CFSSL
+	sp.ExtensionWhitelist[attrmgr.AttrOIDString] = true
+}
+
+func getIntLevel(properties map[string]string, version string) int {
+	strVersion := properties[version]
+	if strVersion == "" {
+		strVersion = "0"
+	}
+	intVersion, err := strconv.Atoi(strVersion)
+	if err != nil {
+		panic(err)
+	}
+	return intVersion
 }

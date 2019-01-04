@@ -16,16 +16,14 @@ limitations under the License.
 package gm
 
 import (
-	"crypto/ecdsa"
+	// "crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/pem"
 	"io"
 	"math/big"
 
-	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
 	"github.com/tjfoc/gmsm/sm2"
+	"github.com/hyperledger/fabric/bccsp"
 )
 
 // //调用SM2接口生成SM2证书
@@ -62,23 +60,17 @@ import (
 func CreateCertificateToMem(template, parent *sm2.Certificate, key bccsp.Key) (cert []byte, err error) {
 	pk := key.(*gmsm2PrivateKey).privKey
 
-	log.Infof("xxxx   template.PublicKey() is: %T ", template.PublicKey)
+	pub, a := template.PublicKey.(*sm2.PublicKey)
+	if a {
+		var puk sm2.PublicKey
 
-	//puk := template.PublicKey.(*sm2.PublicKey)
-	puk := template.PublicKey.(*ecdsa.PublicKey)
-	// cert, err = sm2.CreateCertificate(rand.Reader, template, parent, puk, pk)
-	// pem.EncodeToMemory(block)
+		puk.Curve = sm2.P256Sm2()
+		puk.X = pub.X
+		puk.Y = pub.Y
+		cert, err = sm2.CreateCertificateToMem(template, parent, &puk, pk)
 
-	//
-	der, err := sm2.CreateCertificate(rand.Reader, template, parent, puk, pk)
-	if err != nil {
-		return nil, err
 	}
-	block := &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: der,
-	}
-	return pem.EncodeToMemory(block), nil
+	return
 }
 
 //调用SM2接口生成SM2证书请求

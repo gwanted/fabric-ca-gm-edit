@@ -20,7 +20,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -34,29 +33,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkg/errors"
+
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/revoke"
-	"github.com/spf13/viper"
+	"github.com/cloudflare/cfssl/signer"
+	gmux "github.com/gorilla/mux"
+	"github.com/tjfoc/fabric-ca-gm/lib/attr"
+	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
+	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
 	stls "github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
-
-	_ "github.com/go-sql-driver/mysql" // import to support MySQL
-	_ "github.com/lib/pq"              // import to support Postgres
-	_ "github.com/mattn/go-sqlite3"    // import to support SQLite3
+	"github.com/spf13/viper"
 )
 
 const (
 	defaultClientAuth         = "noclientcert"
 	fabricCAServerProfilePort = "FABRIC_CA_SERVER_PROFILE_PORT"
-	allRoles                  = "user,app,peer,orderer,client,validator,auditor"
-)
-
-// Attribute names
-const (
-	attrRoles          = "hf.Registrar.Roles"
-	attrDelegateRoles  = "hf.Registrar.DelegateRoles"
-	attrRevoker        = "hf.Revoker"
-	attrIntermediateCA = "hf.IntermediateCA"
+	allRoles                  = "peer,orderer,client,user"
+	apiPathPrefix             = "/api/v1/"
 )
 
 // Server is the fabric-ca server
@@ -69,7 +64,7 @@ type Server struct {
 	// The server's configuration
 	Config *ServerConfig
 	// The server mux
-	mux *http.ServeMux
+	mux *gmux.Router
 	// The current listener for this server
 	listener net.Listener
 	// An error which occurs when serving
@@ -84,12 +79,31 @@ type Server struct {
 	wait chan bool
 	// Server mutex
 	mutex sync.Mutex
+	// The server's current levels
+	levels *dbutil.Levels
 }
 
 // Init initializes a fabric-ca server
 func (s *Server) Init(renew bool) (err error) {
+	err = s.init(renew)
+	err2 := s.closeDB()
+	if err2 != nil {
+		log.Errorf("Close DB failed: %s", err2)
+	}
+	return err
+}
+
+// init initializses the server leaving the DB open
+func (s *Server) init(renew bool) (err error) {
+	serverVersion := metadata.GetVersion()
+	log.Infof("Server Version: %s", serverVersion)
+	s.levels, err = metadata.GetLevels(serverVersion)
+	if err != nil {
+		return err
+	}
+	log.Infof("Server Levels: %+v", s.levels)
+
 	// Initialize the config
-	log.Infof("xxx in Server Init,renew:%t", renew)
 	err = s.initConfig()
 	if err != nil {
 		return err
@@ -114,8 +128,12 @@ func (s *Server) Start() (err error) {
 	}
 
 	// Initialize the server
-	err = s.Init(false)
+	err = s.init(false)
 	if err != nil {
+		err2 := s.closeDB()
+		if err2 != nil {
+			log.Errorf("Close DB failed: %s", err2)
+		}
 		return err
 	}
 
@@ -125,8 +143,15 @@ func (s *Server) Start() (err error) {
 	log.Debugf("%d CA instance(s) running on server", len(s.caMap))
 
 	// Start listening and serving
-	return s.listenAndServe()
-
+	err = s.listenAndServe()
+	if err != nil {
+		err2 := s.closeDB()
+		if err2 != nil {
+			log.Errorf("Close DB failed: %s", err2)
+		}
+		return err
+	}
+	return nil
 }
 
 // Stop the server
@@ -157,6 +182,11 @@ func (s *Server) Stop() error {
 		}
 	}
 	log.Debugf("Stop: timed out waiting for stop notification for port %d", port)
+	// make sure DB is closed
+	err = s.closeDB()
+	if err != nil {
+		log.Errorf("Close DB failed: %s", err)
+	}
 	return nil
 }
 
@@ -172,14 +202,17 @@ func (s *Server) RegisterBootstrapUser(user, pass, affiliation string) error {
 	id := CAConfigIdentity{
 		Name:           user,
 		Pass:           pass,
-		Type:           "user",
+		Type:           "client",
 		Affiliation:    affiliation,
-		MaxEnrollments: s.CA.Config.Registry.MaxEnrollments,
+		MaxEnrollments: 0, // 0 means to use the server's max enrollment setting
 		Attrs: map[string]string{
-			attrRoles:          allRoles,
-			attrDelegateRoles:  allRoles,
-			attrRevoker:        "true",
-			attrIntermediateCA: "true",
+			attr.Roles:          allRoles,
+			attr.DelegateRoles:  allRoles,
+			attr.Revoker:        "true",
+			attr.IntermediateCA: "true",
+			attr.GenCRL:         "true",
+			attr.RegistrarAttr:  "*",
+			attr.AffiliationMgr: "true",
 		},
 	}
 
@@ -196,9 +229,15 @@ func (s *Server) initConfig() (err error) {
 	if s.HomeDir == "" {
 		s.HomeDir, err = os.Getwd()
 		if err != nil {
-			return fmt.Errorf("Failed to get server's home directory: %s", err)
+			return errors.Wrap(err, "Failed to get server's home directory")
 		}
 	}
+	// Make home directory absolute, if not already
+	absoluteHomeDir, err := filepath.Abs(s.HomeDir)
+	if err != nil {
+		return fmt.Errorf("Failed to make server's home directory path absolute: %s", err)
+	}
+	s.HomeDir = absoluteHomeDir
 	// Create config if not set
 	if s.Config == nil {
 		s.Config = new(ServerConfig)
@@ -208,19 +247,8 @@ func (s *Server) initConfig() (err error) {
 	if cfg.Debug {
 		log.Level = log.LevelDebug
 	}
-	// Set config defaults if not set
-	if cfg.Address == "" {
-		cfg.Address = DefaultServerAddr
-	}
-	if cfg.Port == 0 {
-		cfg.Port = DefaultServerPort
-	}
 	s.CA.server = s
 	s.CA.HomeDir = s.HomeDir
-	err = s.CA.initConfig()
-	if err != nil {
-		return err
-	}
 	err = s.initMultiCAConfig()
 	if err != nil {
 		return err
@@ -235,7 +263,7 @@ func (s *Server) initConfig() (err error) {
 func (s *Server) initMultiCAConfig() (err error) {
 	cfg := s.Config
 	if cfg.CAcount != 0 && len(cfg.CAfiles) > 0 {
-		return fmt.Errorf("The --cacount and --cafiles options are mutually exclusive")
+		return errors.New("The --cacount and --cafiles options are mutually exclusive")
 	}
 	cfg.CAfiles, err = util.NormalizeFileList(cfg.CAfiles, s.HomeDir)
 	if err != nil {
@@ -283,7 +311,7 @@ func (s *Server) loadCA(caFile string, renew bool) error {
 	var err error
 
 	if !util.FileExists(caFile) {
-		return fmt.Errorf("%s file does not exist", caFile)
+		return errors.Errorf("%s file does not exist", caFile)
 	}
 
 	// Creating new Viper instance, to prevent any server level environment variables or
@@ -291,7 +319,7 @@ func (s *Server) loadCA(caFile string, renew bool) error {
 	// CA config file
 	cfg := &CAConfig{}
 	caViper := viper.New()
-	err = UnmarshalConfig(cfg, caViper, caFile, false, true)
+	err = UnmarshalConfig(cfg, caViper, caFile, false)
 	if err != nil {
 		return err
 	}
@@ -300,7 +328,7 @@ func (s *Server) loadCA(caFile string, renew bool) error {
 	// the name of default CA cause CA names must be unique
 	caName := cfg.CA.Name
 	if caName == "" {
-		return fmt.Errorf("No CA name provided in CA configuration file. CA name is required in %s", caFile)
+		return errors.Errorf("No CA name provided in CA configuration file. CA name is required in %s", caFile)
 	}
 
 	// Replace missing values in CA configuration values with values from the
@@ -321,12 +349,18 @@ func (s *Server) loadCA(caFile string, renew bool) error {
 
 	log.Debugf("CA configuration after checking for missing values: %+v", cfg)
 
-	ca, err := NewCA(caFile, cfg, s, renew)
+	ca, err := newCA(caFile, cfg, s, renew)
 	if err != nil {
 		return err
 	}
-
-	return s.addCA(ca)
+	err = s.addCA(ca)
+	if err != nil {
+		err2 := ca.closeDB()
+		if err2 != nil {
+			log.Errorf("Close DB failed: %s", err2)
+		}
+	}
+	return err
 }
 
 // DN is the distinguished name inside a certificate
@@ -341,7 +375,7 @@ func (s *Server) addCA(ca *CA) error {
 	caName := ca.Config.CA.Name
 	for _, c := range s.caMap {
 		if c.Config.CA.Name == caName {
-			return fmt.Errorf("CA name '%s' is used in '%s' and '%s'",
+			return errors.Errorf("CA name '%s' is used in '%s' and '%s'",
 				caName, ca.ConfigFilePath, c.ConfigFilePath)
 		}
 		err := s.compareDN(c.Config.CA.Certfile, ca.Config.CA.Certfile)
@@ -351,6 +385,25 @@ func (s *Server) addCA(ca *CA) error {
 	}
 	// no conflicts, so add it
 	s.caMap[caName] = ca
+
+	return nil
+}
+
+// closeDB closes all CA dabatases
+func (s *Server) closeDB() error {
+	log.Debugf("Closing server DBs")
+	// close default CA DB
+	err := s.CA.closeDB()
+	if err != nil {
+		return err
+	}
+	// close other CAs DB
+	for _, c := range s.caMap {
+		err = c.closeDB()
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -375,6 +428,9 @@ func (s *Server) createDefaultCAConfigs(cacount int) error {
 		cn := fmt.Sprintf("fabric-ca-server-ca%d", i)
 		cfg = strings.Replace(cfg, "<<<COMMONNAME>>>", cn, 1)
 
+		datasource := dbutil.GetCADataSource(s.CA.Config.DB.Type, s.CA.Config.DB.Datasource, i)
+		cfg = strings.Replace(cfg, "<<<DATASOURCE>>>", datasource, 1)
+
 		s.Config.CAfiles = append(s.Config.CAfiles, cfgFileName)
 
 		// Now write the file
@@ -392,38 +448,36 @@ func (s *Server) createDefaultCAConfigs(cacount int) error {
 	return nil
 }
 
-// Register all endpoint handlers
-func (s *Server) registerHandlers() {
-	s.mux = http.NewServeMux()
-	s.registerHandler("cainfo", newInfoHandler, noAuth)
-	s.registerHandler("register", newRegisterHandler, token)
-	s.registerHandler("enroll", newEnrollHandler, basic)
-	s.registerHandler("reenroll", newReenrollHandler, token)
-	s.registerHandler("revoke", newRevokeHandler, token)
-	s.registerHandler("tcert", newTCertHandler, token)
+// GetCA returns the CA given its name
+func (s *Server) GetCA(name string) (*CA, error) {
+	// Lookup the CA from the server
+	ca := s.caMap[name]
+	if ca == nil {
+		return nil, newHTTPErr(404, ErrCANotFound, "CA '%s' does not exist", name)
+	}
+	return ca, nil
 }
 
-// Register an endpoint handler
-func (s *Server) registerHandler(
-	path string,
-	getHandler func(server *Server) (http.Handler, error),
-	at authType) {
+// Register all endpoint handlers
+func (s *Server) registerHandlers() {
+	s.mux = gmux.NewRouter()
+	s.registerHandler("cainfo", newCAInfoEndpoint(s))
+	s.registerHandler("register", newRegisterEndpoint(s))
+	s.registerHandler("enroll", newEnrollEndpoint(s))
+	s.registerHandler("reenroll", newReenrollEndpoint(s))
+	s.registerHandler("revoke", newRevokeEndpoint(s))
+	s.registerHandler("tcert", newTCertEndpoint(s))
+	s.registerHandler("gencrl", newGenCRLEndpoint(s))
+	s.registerHandler("identities", newIdentitiesStreamingEndpoint(s))
+	s.registerHandler("identities/{id}", newIdentitiesEndpoint(s))
+	s.registerHandler("affiliations", newAffiliationsStreamingEndpoint(s))
+	s.registerHandler("affiliations/{affiliation}", newAffiliationsEndpoint(s))
+}
 
-	var handler http.Handler
-
-	handler, err := getHandler(s)
-	if err != nil {
-		log.Warningf("Endpoint '%s' is disabled: %s", path, err)
-		return
-	}
-
-	handler = &fcaAuthHandler{
-		server:   s,
-		authType: at,
-		next:     handler,
-	}
-	s.mux.Handle("/"+path, handler)
-	s.mux.Handle("/api/v1/"+path, handler)
+// Register a handler
+func (s *Server) registerHandler(path string, se *serverEndpoint) {
+	s.mux.Handle("/"+path, se)
+	s.mux.Handle(apiPathPrefix+path, se)
 }
 
 // Starting listening and serving
@@ -448,6 +502,27 @@ func (s *Server) listenAndServe() (err error) {
 	if c.TLS.Enabled {
 		log.Debug("TLS is enabled")
 		addrStr = fmt.Sprintf("https://%s", addr)
+
+		// If key file is specified and it does not exist or its corresponding certificate file does not exist
+		// then need to return error and not start the server. The TLS key file is specified when the user
+		// wants the server to use custom tls key and cert and don't want server to auto generate its own. So,
+		// when the key file is specified, it must exist on the file system
+		if c.TLS.KeyFile != "" {
+			if !util.FileExists(c.TLS.KeyFile) {
+				return fmt.Errorf("File specified by 'tls.keyfile' does not exist: %s", c.TLS.KeyFile)
+			}
+			if !util.FileExists(c.TLS.CertFile) {
+				return fmt.Errorf("File specified by 'tls.certfile' does not exist: %s", c.TLS.CertFile)
+			}
+		} else if !util.FileExists(c.TLS.CertFile) {
+			// TLS key file is not specified, generate TLS key and cert if they are not already generated
+			err = s.autoGenerateTLSCertificateKey()
+			if err != nil {
+				return fmt.Errorf("Failed to automatically generate TLS certificate and key: %s", err)
+			}
+		}
+		log.Debugf("TLS Certificate: %s, TLS Key: %s", c.TLS.CertFile, c.TLS.KeyFile)
+
 		cer, err := util.LoadX509KeyPair(c.TLS.CertFile, c.TLS.KeyFile, s.csp)
 		if err != nil {
 			return err
@@ -479,25 +554,25 @@ func (s *Server) listenAndServe() (err error) {
 			MinVersion:   tls.VersionTLS12,
 			MaxVersion:   tls.VersionTLS12,
 		}
-		log.Info("enter tls.listen")
+
 		listener, err = tls.Listen("tcp", addr, config)
 		if err != nil {
-			return fmt.Errorf("TLS listen failed for %s: %s", addrStr, err)
+			return errors.Wrapf(err, "TLS listen failed for %s", addrStr)
 		}
 	} else {
 		addrStr = fmt.Sprintf("http://%s", addr)
 		listener, err = net.Listen("tcp", addr)
 		if err != nil {
-			return fmt.Errorf("TCP listen failed for %s: %s", addrStr, err)
+			return errors.Wrapf(err, "TCP listen failed for %s", addrStr)
 		}
 	}
 	s.listener = listener
-	log.Infof("Listening on %s", s.Config.Port, addrStr)
+	log.Infof("Listening on %s", addrStr)
 
 	err = s.checkAndEnableProfiling()
 	if err != nil {
 		s.closeListener()
-		return fmt.Errorf("TCP listen for profiling failed: %s", err)
+		return errors.WithMessage(err, "TCP listen for profiling failed")
 	}
 
 	// Start serving requests, either blocking or non-blocking
@@ -525,6 +600,10 @@ func (s *Server) serve() error {
 	s.serveError = http.Serve(listener, s.mux)
 	log.Errorf("Server has stopped serving: %s", s.serveError)
 	s.closeListener()
+	err := s.closeDB()
+	if err != nil {
+		log.Errorf("Close DB failed: %s", err)
+	}
 	if s.wait != nil {
 		s.wait <- true
 	}
@@ -556,7 +635,6 @@ func (s *Server) checkAndEnableProfiling() error {
 			}()
 		}
 	}
-	log.Info("Exit checkAndEnableProfiling")
 	return nil
 }
 
@@ -578,7 +656,7 @@ func (s *Server) closeListener() error {
 	if s.listener == nil {
 		msg := fmt.Sprintf("Stop: listener was already closed on port %d", port)
 		log.Debugf(msg)
-		return fmt.Errorf(msg)
+		return errors.New(msg)
 	}
 	err := s.listener.Close()
 	s.listener = nil
@@ -604,7 +682,7 @@ func (s *Server) compareDN(existingCACertFile, newCACertFile string) error {
 
 	err = existingDN.equal(newDN)
 	if err != nil {
-		return fmt.Errorf("Please modify CSR in %s and try adding CA again: %s", newCACertFile, err)
+		return errors.Wrapf(err, "Please modify CSR in %s and try adding CA again", newCACertFile)
 	}
 	return nil
 }
@@ -618,7 +696,7 @@ func (s *Server) fetchCRL(r io.Reader) ([]byte, error) {
 
 	crl, err := util.Read(r, crl)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading CRL with max buffer size of %d: %s", crlSizeLimit, err)
+		return nil, errors.WithMessage(err, fmt.Sprintf("Error reading CRL with max buffer size of %d", crlSizeLimit))
 	}
 
 	return crl, nil
@@ -643,6 +721,47 @@ func (s *Server) loadDNFromCertFile(certFile string) (*DN, error) {
 		subject: subjectDN,
 	}
 	return distinguishedName, nil
+}
+
+func (s *Server) autoGenerateTLSCertificateKey() error {
+	log.Debug("TLS enabled but no certificate or key provided, automatically generate TLS credentials")
+
+	clientCfg := &ClientConfig{
+		CSP: s.CA.Config.CSP,
+	}
+	client := Client{
+		HomeDir: s.HomeDir,
+		Config:  clientCfg,
+	}
+
+	// Generate CSR that will be used to create the TLS certificate
+	csrReq := s.Config.CAcfg.CSR
+	csrReq.CA = nil // Not requesting a CA certificate
+	hostname := util.Hostname()
+	log.Debugf("TLS CSR: %+v\n", csrReq)
+
+	// Can't use the same CN as the signing certificate CN (default: fabric-ca-server) otherwise no AKI is generated
+	csr, _, err := client.GenCSR(&csrReq, hostname)
+	if err != nil {
+		return fmt.Errorf("Failed to generate CSR: %s", err)
+	}
+
+	// Use the 'tls' profile that will return a certificate with the appropriate extensions
+	req := signer.SignRequest{
+		Profile: "tls",
+		Request: string(csr),
+	}
+
+	// Use default CA to get back signed TLS certificate
+	cert, err := s.CA.enrollSigner.Sign(req)
+	if err != nil {
+		return fmt.Errorf("Failed to generate TLS certificate: %s", err)
+	}
+
+	// Write the TLS certificate to the file system
+	ioutil.WriteFile(s.Config.TLS.CertFile, cert, 0644)
+
+	return nil
 }
 
 func (dn *DN) equal(checkDN *DN) error {

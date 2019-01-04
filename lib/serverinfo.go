@@ -17,24 +17,8 @@ limitations under the License.
 package lib
 
 import (
-	"net/http"
-
-	cfapi "github.com/cloudflare/cfssl/api"
-	"github.com/cloudflare/cfssl/log"
+	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
 )
-
-// infoHandler handles the GET /info request
-type infoHandler struct {
-	server *Server
-}
-
-// newInfoHandler is the constructor for the infoHandler
-func newInfoHandler(server *Server) (h http.Handler, err error) {
-	return &cfapi.HTTPHandler{
-		Handler: &infoHandler{server: server},
-		Methods: []string{"POST"},
-	}, nil
-}
 
 // The response to the GET /info request
 type serverInfoResponseNet struct {
@@ -42,18 +26,29 @@ type serverInfoResponseNet struct {
 	CAName string
 	// Base64 encoding of PEM-encoded certificate chain
 	CAChain string
+	// Version of the server
+	Version string
 }
 
-// Handle is the handler for the GET /info request
-func (ih *infoHandler) Handle(w http.ResponseWriter, r *http.Request) error {
-	log.Debug("Received request for server info")
-
-	caname := r.Header.Get(caHdrName)
-
-	resp := &serverInfoResponseNet{}
-	err := ih.server.caMap[caname].fillCAInfo(resp)
-	if err != nil {
-		return err
+func newCAInfoEndpoint(s *Server) *serverEndpoint {
+	return &serverEndpoint{
+		Methods: []string{"GET", "POST", "HEAD"},
+		Handler: cainfoHandler,
+		Server:  s,
 	}
-	return cfapi.SendResponse(w, resp)
+}
+
+// Handle is the handler for the GET or POST /info request
+func cainfoHandler(ctx *serverRequestContext) (interface{}, error) {
+	ca, err := ctx.GetCA()
+	if err != nil {
+		return nil, err
+	}
+	resp := &serverInfoResponseNet{}
+	err = ca.fillCAInfo(resp)
+	if err != nil {
+		return nil, err
+	}
+	resp.Version = metadata.GetVersion()
+	return resp, nil
 }

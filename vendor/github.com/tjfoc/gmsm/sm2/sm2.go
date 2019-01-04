@@ -26,6 +26,7 @@ import (
 	"crypto/sha512"
 	"encoding/asn1"
 	"encoding/binary"
+	// "encoding/hex"
 	"errors"
 	"io"
 	"math/big"
@@ -72,7 +73,7 @@ func (priv *PrivateKey) Decrypt(data []byte) ([]byte, error) {
 
 func (pub *PublicKey) Verify(msg []byte, sign []byte) bool {
 	var sm2Sign sm2Signature
-	log.Debugf("public verify %s", string(msg))
+	log.Debugf("public verify %v %v", pub.X,pub.Y)
 	_, err := asn1.Unmarshal(sign, &sm2Sign)
 	if err != nil {
 		log.Debugf("public verify %s", err.Error())

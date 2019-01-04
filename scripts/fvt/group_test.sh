@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-FABRIC_CA="$GOPATH/src/github.com/tjfoc/gmca"
+FABRIC_CA="$GOPATH/src/github.com/hyperledger/fabric-ca"
 SCRIPTDIR="$FABRIC_CA/scripts/fvt"
 . $SCRIPTDIR/fabric-ca_utils
 RC=0
@@ -15,7 +15,7 @@ HTTP_PORT="3755"
 cd $TESTDATA
 python -m SimpleHTTPServer $HTTP_PORT &
 HTTP_PID=$!
-pollServer python localhost "$HTTP_PORT" || ErrorExit "Failed to start HTTP server"
+pollSimpleHttp
 echo $HTTP_PID
 trap "kill $HTTP_PID; CleanUp 1; exit 1" INT
 
@@ -40,10 +40,6 @@ register admin user7 validator bogus
 test $? -eq 0 && ErrorMsg "Failed to register user7:validator:bank_a with 'bogus' group"
 register admin user8 auditor bogus
 test $? -eq 0 && ErrorMsg "Failed to register user8:auditor with 'bogus' group"
-
-# one is always expected to at least sumbit a group with request
-register admin user9 auditor '[]'
-test "$?" -eq 0 && ErrorMsg "Improperly registered user9:auditor with null group"
 
 $SCRIPTDIR/fabric-ca_setup.sh -L -d mysql
 $SCRIPTDIR/fabric-ca_setup.sh -R -x $CA_CFG_PATH -d mysql

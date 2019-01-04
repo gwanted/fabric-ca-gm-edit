@@ -19,7 +19,6 @@ package lib
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -30,14 +29,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pkg/errors"
+
 	cfsslapi "github.com/cloudflare/cfssl/api"
 	"github.com/cloudflare/cfssl/csr"
 	"github.com/cloudflare/cfssl/log"
-	"github.com/mitchellh/mapstructure"
 	"github.com/tjfoc/fabric-ca-gm/api"
+	"github.com/tjfoc/fabric-ca-gm/lib/streamer"
 	"github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/mitchellh/mapstructure"
 )
 
 // Client is the fabric-ca client object
@@ -52,13 +54,13 @@ type Client struct {
 	keyFile, certFile, caCertsDir string
 	// The crypto service provider (BCCSP)
 	csp bccsp.BCCSP
+	// HTTP client associated with this Fabric CA client
+	httpClient *http.Client
 }
 
 // Init initializes the client
 func (c *Client) Init() error {
-
 	if !c.initialized {
-
 		cfg := c.Config
 		log.Debugf("Initializing client with config: %+v", cfg)
 		if cfg.MSPDir == "" {
@@ -73,34 +75,57 @@ func (c *Client) Init() error {
 		keyDir := path.Join(mspDir, "keystore")
 		err = os.MkdirAll(keyDir, 0700)
 		if err != nil {
-			return fmt.Errorf("Failed to create keystore directory: %s", err)
+			return errors.Wrap(err, "Failed to create keystore directory")
 		}
 		c.keyFile = path.Join(keyDir, "key.pem")
 		// Cert directory and file
 		certDir := path.Join(mspDir, "signcerts")
 		err = os.MkdirAll(certDir, 0755)
 		if err != nil {
-			return fmt.Errorf("Failed to create signcerts directory: %s", err)
+			return errors.Wrap(err, "Failed to create signcerts directory")
 		}
 		c.certFile = path.Join(certDir, "cert.pem")
 		// CA certs directory
 		c.caCertsDir = path.Join(mspDir, "cacerts")
 		err = os.MkdirAll(c.caCertsDir, 0755)
 		if err != nil {
-			return fmt.Errorf("Failed to create cacerts directory: %s", err)
+			return errors.Wrap(err, "Failed to create cacerts directory")
 		}
 		// Initialize BCCSP (the crypto layer)
 		c.csp, err = util.InitBCCSP(&cfg.CSP, mspDir, c.HomeDir)
-
-		log.Infof("xxx util.InitBCCSP after CSP pointer = %p", c.Config.CSP)
-
 		if err != nil {
 			return err
 		}
+		// Create http.Client object and associate it with this client
+		err = c.initHTTPClient()
+		if err != nil {
+			return err
+		}
+
 		// Successfully initialized the client
 		c.initialized = true
 	}
 	SetProviderName(c.Config.CSP.ProviderName)
+	return nil
+}
+
+func (c *Client) initHTTPClient() error {
+	tr := new(http.Transport)
+	if c.Config.TLS.Enabled {
+		log.Info("TLS Enabled")
+
+		err := tls.AbsTLSClient(&c.Config.TLS, c.HomeDir)
+		if err != nil {
+			return err
+		}
+
+		tlsConfig, err2 := tls.GetClientTLSConfig(&c.Config.TLS, c.csp)
+		if err2 != nil {
+			return fmt.Errorf("Failed to get client TLS config: %s", err2)
+		}
+		tr.TLSClientConfig = tlsConfig
+	}
+	c.httpClient = &http.Client{Transport: tr}
 	return nil
 }
 
@@ -111,6 +136,8 @@ type GetServerInfoResponse struct {
 	// CAChain is the PEM-encoded bytes of the fabric-ca-server's CA chain.
 	// The 1st element of the chain is the root CA cert
 	CAChain []byte
+	// Version of the server
+	Version string
 }
 
 // GetCAInfo returns generic CA information
@@ -148,6 +175,7 @@ func (c *Client) net2LocalServerInfo(net *serverInfoResponseNet, local *GetServe
 	}
 	local.CAName = net.CAName
 	local.CAChain = caChain
+	local.Version = net.Version
 	return nil
 }
 
@@ -170,11 +198,12 @@ func (c *Client) Enroll(req *api.EnrollmentRequest) (*EnrollmentResponse, error)
 	// Generate the CSR
 	csrPEM, key, err := c.GenCSR(req.CSR, req.Name)
 	if err != nil {
-		return nil, fmt.Errorf("Failure generating CSR: %s", err)
+		return nil, errors.WithMessage(err, "Failure generating CSR")
 	}
 
 	reqNet := &api.EnrollmentRequestNet{
-		CAName: req.CAName,
+		CAName:   req.CAName,
+		AttrReqs: req.AttrReqs,
 	}
 
 	if req.CSR != nil {
@@ -192,7 +221,6 @@ func (c *Client) Enroll(req *api.EnrollmentRequest) (*EnrollmentResponse, error)
 	// Send the CSR to the fabric-ca server with basic auth header
 	post, err := c.newPost("enroll", body)
 	if err != nil {
-		log.Infof("newPost err = %s", err)
 		return nil, err
 	}
 	post.SetBasicAuth(req.Name, req.Secret)
@@ -214,7 +242,7 @@ func (c *Client) newEnrollmentResponse(result *enrollmentResponseNet, id string,
 	log.Debugf("newEnrollmentResponse %s", id)
 	certByte, err := util.B64Decode(result.Cert)
 	if err != nil {
-		return nil, fmt.Errorf("Invalid response format from server: %s", err)
+		return nil, errors.WithMessage(err, "Invalid response format from server")
 	}
 	resp := &EnrollmentResponse{
 		Identity: newIdentity(c, id, key, certByte),
@@ -239,7 +267,7 @@ func (c *Client) GenCSR(req *api.CSRInfo, id string) ([]byte, bccsp.Key, error) 
 	cr.CN = id
 
 	if cr.KeyRequest == nil {
-		cr.KeyRequest = csr.NewBasicKeyRequest()
+		cr.KeyRequest = newCfsslBasicKeyRequest(api.NewBasicKeyRequest())
 	}
 	if IsGMConfig() {
 		cr.KeyRequest = csr.NewGMKeyRequest()
@@ -284,7 +312,7 @@ func (c *Client) newCertificateRequest(req *api.CSRInfo) *csr.CertificateRequest
 		}
 	}
 	if req != nil && req.KeyRequest != nil {
-		cr.KeyRequest = req.KeyRequest
+		cr.KeyRequest = newCfsslBasicKeyRequest(req.KeyRequest)
 	}
 	if req != nil {
 		cr.CA = req.CA
@@ -310,7 +338,7 @@ func (c *Client) StoreMyIdentity(cert []byte) error {
 	}
 	err = util.WriteFile(c.certFile, cert, 0644)
 	if err != nil {
-		return fmt.Errorf("Failed to store my certificate: %s", err)
+		return errors.WithMessage(err, "Failed to store my certificate")
 	}
 	log.Infof("Stored client certificate at %s", c.certFile)
 	return nil
@@ -318,7 +346,7 @@ func (c *Client) StoreMyIdentity(cert []byte) error {
 
 // LoadIdentity loads an identity from disk
 func (c *Client) LoadIdentity(keyFile, certFile string) (*Identity, error) {
-	log.Debug("Loading identity: keyFile=%s, certFile=%s", keyFile, certFile)
+	log.Debugf("Loading identity: keyFile=%s, certFile=%s", keyFile, certFile)
 	err := c.Init()
 	if err != nil {
 		return nil, err
@@ -329,14 +357,12 @@ func (c *Client) LoadIdentity(keyFile, certFile string) (*Identity, error) {
 		return nil, err
 	}
 	key, _, _, err := util.GetSignerFromCertFile(certFile, c.csp)
-	log.Info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~", err)
-	log.Info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 	if err != nil {
 		// Fallback: attempt to read out of keyFile and import
 		log.Debugf("No key found in BCCSP keystore, attempting fallback")
 		key, err = util.ImportBCCSPKeyFromPEM(keyFile, c.csp, true)
 		if err != nil {
-			return nil, fmt.Errorf("Could not find the private key in BCCSP keystore nor in keyfile %s: %s", keyFile, err)
+			return nil, errors.WithMessage(err, fmt.Sprintf("Could not find the private key in BCCSP keystore nor in keyfile %s", keyFile))
 		}
 	}
 	return c.NewIdentity(key, cert)
@@ -371,7 +397,7 @@ func (c *Client) GetCertFilePath() string {
 	return c.certFile
 }
 
-// NewGet create a new GET request
+// newGet create a new GET request
 func (c *Client) newGet(endpoint string) (*http.Request, error) {
 	curl, err := c.getURL(endpoint)
 	if err != nil {
@@ -379,7 +405,33 @@ func (c *Client) newGet(endpoint string) (*http.Request, error) {
 	}
 	req, err := http.NewRequest("GET", curl, bytes.NewReader([]byte{}))
 	if err != nil {
-		return nil, fmt.Errorf("Failed creating GET request for %s: %s", curl, err)
+		return nil, errors.Wrapf(err, "Failed creating GET request for %s", curl)
+	}
+	return req, nil
+}
+
+// newPut create a new PUT request
+func (c *Client) newPut(endpoint string, reqBody []byte) (*http.Request, error) {
+	curl, err := c.getURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("PUT", curl, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed creating PUT request for %s", curl)
+	}
+	return req, nil
+}
+
+// newDelete create a new DELETE request
+func (c *Client) newDelete(endpoint string) (*http.Request, error) {
+	curl, err := c.getURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("DELETE", curl, bytes.NewReader([]byte{}))
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed creating DELETE request for %s", curl)
 	}
 	return req, nil
 }
@@ -392,76 +444,98 @@ func (c *Client) newPost(endpoint string, reqBody []byte) (*http.Request, error)
 	}
 	req, err := http.NewRequest("POST", curl, bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("Failed posting to %s: %s", curl, err)
+		return nil, errors.Wrapf(err, "Failed posting to %s", curl)
 	}
 	return req, nil
 }
 
 // SendReq sends a request to the fabric-ca-server and fills in the result
 func (c *Client) SendReq(req *http.Request, result interface{}) (err error) {
+
 	reqStr := util.HTTPRequestToString(req)
 	log.Debugf("Sending request\n%s", reqStr)
+
 	err = c.Init()
 	if err != nil {
 		return err
 	}
-	var tr = new(http.Transport)
-	if c.Config.TLS.Enabled {
-		err = tls.AbsTLSClient(&c.Config.TLS, c.HomeDir)
-		if err != nil {
-			return err
-		}
-		tlsConfig, err2 := tls.GetClientTLSConfig(&c.Config.TLS, c.csp)
-		if err2 != nil {
-			return fmt.Errorf("Failed to get client TLS config: %s", err2)
-		}
-		tr.TLSClientConfig = tlsConfig
-	}
 
-	httpClient := &http.Client{Transport: tr}
-	resp, err := httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST failure [%s]; not sending\n%s", err, reqStr)
+		return errors.Wrapf(err, "%s failure of request: %s", req.Method, reqStr)
 	}
 	var respBody []byte
 	if resp.Body != nil {
 		respBody, err = ioutil.ReadAll(resp.Body)
-		defer resp.Body.Close()
+		defer func() {
+			err := resp.Body.Close()
+			if err != nil {
+				log.Debugf("Failed to close the response body: %s", err.Error())
+			}
+		}()
 		if err != nil {
-			return fmt.Errorf("Failed to read response [%s] of request:\n%s", err, reqStr)
+			return errors.Wrapf(err, "Failed to read response of request: %s", reqStr)
 		}
 		log.Debugf("Received response\n%s", util.HTTPResponseToString(resp))
 	}
-
 	var body *cfsslapi.Response
 	if respBody != nil && len(respBody) > 0 {
 		body = new(cfsslapi.Response)
 		err = json.Unmarshal(respBody, body)
 		if err != nil {
-			log.Infof("Unmarshl err = %s", err)
-			return fmt.Errorf("Failed to parse response: %s\n%s", err, respBody)
+			return errors.Wrapf(err, "Failed to parse response: %s", respBody)
 		}
 		if len(body.Errors) > 0 {
-			msg := body.Errors[0].Message
-			log.Infof("error msg =%s", msg)
-			return fmt.Errorf("Error response from server was: %s", msg)
+			var errorMsg string
+			for _, err := range body.Errors {
+				msg := fmt.Sprintf("Response from server: Error Code: %d - %s\n", err.Code, err.Message)
+				if errorMsg == "" {
+					errorMsg = msg
+				} else {
+					errorMsg = errorMsg + fmt.Sprintf("\n%s", msg)
+				}
+			}
+			return errors.Errorf(errorMsg)
 		}
 	}
 	scode := resp.StatusCode
-	log.Infof("scode = %d", scode)
 	if scode >= 400 {
-
-		return fmt.Errorf("Failed with server status code %d for request:\n%s", scode, reqStr)
+		return errors.Errorf("Failed with server status code %d for request:\n%s", scode, reqStr)
 	}
 	if body == nil {
-		return fmt.Errorf("Empty response body:\n%s", reqStr)
+		return errors.Errorf("Empty response body:\n%s", reqStr)
 	}
 	if !body.Success {
-		return fmt.Errorf("Server returned failure for request:\n%s", reqStr)
+		return errors.Errorf("Server returned failure for request:\n%s", reqStr)
 	}
 	log.Debugf("Response body result: %+v", body.Result)
 	if result != nil {
 		return mapstructure.Decode(body.Result, result)
+	}
+	return nil
+}
+
+// StreamResponse reads the response as it comes back from the server
+func (c *Client) StreamResponse(req *http.Request, stream string, cb func(*json.Decoder) error) (err error) {
+
+	reqStr := util.HTTPRequestToString(req)
+	log.Debugf("Sending request\n%s", reqStr)
+
+	err = c.Init()
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return errors.Wrapf(err, "%s failure of request: %s", req.Method, reqStr)
+	}
+	defer resp.Body.Close()
+
+	dec := json.NewDecoder(resp.Body)
+	err = streamer.StreamJSONArray(dec, stream, cb)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -497,6 +571,10 @@ func (c *Client) CheckEnrollment() error {
 		}
 	}
 	return errors.New("Enrollment information does not exist. Please execute enroll command first. Example: fabric-ca-client enroll -u http://user:userpw@serverAddr:serverPort")
+}
+
+func newCfsslBasicKeyRequest(bkr *api.BasicKeyRequest) *csr.BasicKeyRequest {
+	return &csr.BasicKeyRequest{A: bkr.Algo, S: bkr.Size}
 }
 
 // NormalizeURL normalizes a URL (from cfssl)

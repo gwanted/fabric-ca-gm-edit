@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-FABRIC_CA="$GOPATH/src/github.com/tjfoc/gmca"
+FABRIC_CA="$GOPATH/src/github.com/hyperledger/fabric-ca"
 SCRIPTDIR="$FABRIC_CA/scripts/fvt"
 . $SCRIPTDIR/fabric-ca_utils
 PKI="$SCRIPTDIR/utils/pki"

@@ -539,55 +539,55 @@
 		},
 		{
 			"checksumSHA1": "DHHy4I8YSsE+k1JGcFZhBf/naFY=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/bccsp",
+			"path": "github.com/hyperledger/fabric/bccsp",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "Z4Mm2kUsofbxOLbMrYRmBr4N1gs=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/bccsp/factory",
+			"path": "github.com/hyperledger/fabric/bccsp/factory",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "gyHVqK58r0KWMK64x2Z73uljk+g=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/bccsp/gm",
+			"path": "github.com/hyperledger/fabric/bccsp/gm",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "qjh3QEKYa7zVu9b+ZJPjOdKDBHA=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/bccsp/pkcs11",
+			"path": "github.com/hyperledger/fabric/bccsp/pkcs11",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "x5ULfWMqbXHlsrqltMYBq/OzQ6w=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/bccsp/signer",
+			"path": "github.com/hyperledger/fabric/bccsp/signer",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "yS37z2jkBSULqBFQ/ND3HHyZf1U=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/bccsp/sw",
+			"path": "github.com/hyperledger/fabric/bccsp/sw",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "MUhv8HUxoht1gbCqY4GiNbVFujM=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/bccsp/utils",
+			"path": "github.com/hyperledger/fabric/bccsp/utils",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "ixYYNmCHV+DuGmRD6KcZgrXlvlE=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/common/errors",
+			"path": "github.com/hyperledger/fabric/common/errors",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},
 		{
 			"checksumSHA1": "QRdlKS8jZIqQlfOTRmCD8F39NWU=",
-			"path": "github.com/tjfoc/hyperledger-fabric-gm/common/flogging",
+			"path": "github.com/hyperledger/fabric/common/flogging",
 			"revision": "0d591b35ce15d62d58e9880c3a0081ba041813dc",
 			"revisionTime": "2018-04-12T05:46:28Z"
 		},

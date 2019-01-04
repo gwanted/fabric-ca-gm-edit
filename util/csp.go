@@ -11,26 +11,25 @@ Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
-limitations under the License.  */
+limitations under the License.
+*/
 
 package util
 
 import (
-	//"github.com/tjfoc/hyperledger-fabric-gm/bccsp/gm/sm2"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io/ioutil"
-	"path"
 	"strings"
 	_ "time" // for ocspSignerFromConfig
 
-	"encoding/hex"
+	"github.com/pkg/errors"
 
 	_ "github.com/cloudflare/cfssl/cli" // for ocspSignerFromConfig
 	"github.com/cloudflare/cfssl/config"
@@ -42,11 +41,10 @@ import (
 	"github.com/cloudflare/cfssl/signer/local"
 	"github.com/hyperledger/fabric/bccsp/gm"
 	"github.com/tjfoc/gmsm/sm2"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/factory"
-	cspsigner "github.com/tjfoc/hyperledger-fabric-gm/bccsp/signer"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/utils"
-	//"github.com/tjfoc/hyperledger-fabric-gm/vendor/github.com/tjfoc/gmsm/sm2"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/bccsp/factory"
+	cspsigner "github.com/hyperledger/fabric/bccsp/signer"
+	"github.com/hyperledger/fabric/bccsp/utils"
 )
 
 // GetDefaultBCCSP returns the default BCCSP
@@ -56,7 +54,6 @@ func GetDefaultBCCSP() bccsp.BCCSP {
 
 // InitBCCSP initializes BCCSP
 func InitBCCSP(optsPtr **factory.FactoryOpts, mspDir, homeDir string) (bccsp.BCCSP, error) {
-	log.Info("------------enter InitBCCSP!")
 	err := ConfigureBCCSP(optsPtr, mspDir, homeDir)
 	if err != nil {
 		return nil, err
@@ -68,92 +65,13 @@ func InitBCCSP(optsPtr **factory.FactoryOpts, mspDir, homeDir string) (bccsp.BCC
 	return csp, nil
 }
 
-// ConfigureBCCSP configures BCCSP, using
-func ConfigureBCCSP(optsPtr **factory.FactoryOpts, mspDir, homeDir string) error {
-	log.Info("xxx csp.go in ConfigureBCCSP")
-	var err error
-	if optsPtr == nil {
-		return errors.New("nil argument not allowed")
-	}
-	opts := *optsPtr
-	if opts == nil {
-		opts = &factory.FactoryOpts{}
-	}
-	//
-	//opts.ProviderName = "GM"
-	log.Infof("xxx csp.go opts.ProviderName [%s]", opts.ProviderName)
-	if opts.ProviderName == "" {
-		opts.ProviderName = "GM"
-	}
-	SetProviderName(opts.ProviderName)
-	if strings.ToUpper(opts.ProviderName) == "SW" {
-		if opts.SwOpts == nil {
-			opts.SwOpts = &factory.SwOpts{}
-		}
-		if opts.SwOpts.HashFamily == "" {
-			opts.SwOpts.HashFamily = "SHA"
-		}
-		if opts.SwOpts.SecLevel == 0 {
-			opts.SwOpts.SecLevel = 256
-		}
-		if opts.SwOpts.FileKeystore == nil {
-			opts.SwOpts.FileKeystore = &factory.FileKeystoreOpts{}
-		}
-		// The mspDir overrides the KeyStorePath; otherwise, if not set, set default
-		if mspDir != "" {
-			opts.SwOpts.FileKeystore.KeyStorePath = path.Join(mspDir, "keystore")
-		} else if opts.SwOpts.FileKeystore.KeyStorePath == "" {
-			opts.SwOpts.FileKeystore.KeyStorePath = path.Join("msp", "keystore")
-		}
-	}
-	if strings.ToUpper(opts.ProviderName) == "GM" {
-		if opts.SwOpts == nil {
-			opts.SwOpts = &factory.SwOpts{}
-		}
-		if opts.SwOpts.HashFamily == "" {
-			opts.SwOpts.HashFamily = "GMSM3"
-		}
-		if opts.SwOpts.SecLevel == 0 {
-			opts.SwOpts.SecLevel = 256
-		}
-		if opts.SwOpts.FileKeystore == nil {
-			opts.SwOpts.FileKeystore = &factory.FileKeystoreOpts{}
-		}
-		// The mspDir overrides the KeyStorePath; otherwise, if not set, set default
-		if mspDir != "" {
-			opts.SwOpts.FileKeystore.KeyStorePath = path.Join(mspDir, "keystore")
-		} else if opts.SwOpts.FileKeystore.KeyStorePath == "" {
-			opts.SwOpts.FileKeystore.KeyStorePath = path.Join("msp", "keystore")
-		}
-	}
-
-	err = makeFileNamesAbsolute(opts, homeDir)
-	if err != nil {
-		return fmt.Errorf("Failed to make BCCSP files absolute: %s", err)
-	}
-	log.Debugf("Initializing BCCSP: %+v", opts)
-	if opts.SwOpts != nil {
-		log.Debugf("Initializing BCCSP with software options %+v", opts.SwOpts)
-	}
-	if opts.Pkcs11Opts != nil {
-		log.Debugf("Initializing BCCSP with PKCS11 options %+v", opts.Pkcs11Opts)
-	}
-	// Init the BCCSP factories
-	err = factory.InitFactories(opts)
-	if err != nil {
-		return fmt.Errorf("Failed to initialize BCCSP Factories: %s", err)
-	}
-	*optsPtr = opts
-	return nil
-}
-
 // GetBCCSP returns BCCSP
 func GetBCCSP(opts *factory.FactoryOpts, homeDir string) (bccsp.BCCSP, error) {
 
 	// Get BCCSP from the opts
 	csp, err := factory.GetBCCSPFromOpts(opts)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get BCCSP: %s [opts: %+v]", err, opts)
+		return nil, errors.WithMessage(err, "Failed to get BCCSP with opts")
 	}
 	return csp, nil
 }
@@ -172,35 +90,29 @@ func makeFileNamesAbsolute(opts *factory.FactoryOpts, homeDir string) error {
 // BccspBackedSigner attempts to create a signer using csp bccsp.BCCSP. This csp could be SW (golang crypto)
 // PKCS11 or whatever BCCSP-conformant library is configured
 func BccspBackedSigner(caFile, keyFile string, policy *config.Signing, csp bccsp.BCCSP) (signer.Signer, error) {
-	log.Infof("xxxx in BccspBackedSigner,caFile:%s", caFile)
 	_, cspSigner, parsedCa, err := GetSignerFromCertFile(caFile, csp)
-	log.Infof("xxx  end GetSignerFromCertFile error, %s", err)
 	if err != nil {
 		// Fallback: attempt to read out of keyFile and import
 		log.Debugf("No key found in BCCSP keystore, attempting fallback")
 		var key bccsp.Key
 		var signer crypto.Signer
 
-		log.Info("xxxx begin ImportBCCSPKeyFromPEM")
 		key, err = ImportBCCSPKeyFromPEM(keyFile, csp, false)
-		log.Infof("xxxx end ImportBCCSPKeyFromPEM,err %s", err)
 		if err != nil {
-			return nil, fmt.Errorf("Could not find the private key in BCCSP keystore nor in keyfile %s: %s", keyFile, err)
+			return nil, errors.WithMessage(err, fmt.Sprintf("Could not find the private key in BCCSP keystore nor in keyfile '%s'", keyFile))
 		}
 
 		signer, err = cspsigner.New(csp, key)
-		log.Infof("xxxx end cspsigner.New(),err %s", err)
 		if err != nil {
-			return nil, fmt.Errorf("Failed initializing CryptoSigner: %s", err)
+			return nil, errors.WithMessage(err, "Failed initializing CryptoSigner")
 		}
 		cspSigner = signer
 	}
 
 	signer, err := local.NewSigner(cspSigner, parsedCa, signer.DefaultSigAlgo(cspSigner), policy)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create new signer: %s", err.Error())
+		return nil, errors.Wrap(err, "Failed to create new signer")
 	}
-	log.Info("xxxx  end BccspBackedSigner,successful")
 	return signer, nil
 }
 
@@ -222,7 +134,7 @@ func getBCCSPKeyOpts(kr csr.KeyRequest, ephemeral bool) (opts bccsp.KeyGenOpts, 
 			return &bccsp.RSA4096KeyGenOpts{Temporary: ephemeral}, nil
 		default:
 			// Need to add a way to specify arbitrary RSA key size to bccsp
-			return nil, fmt.Errorf("Invalid RSA key size: %d", kr.Size())
+			return nil, errors.Errorf("Invalid RSA key size: %d", kr.Size())
 		}
 	case "ecdsa":
 		switch kr.Size() {
@@ -236,19 +148,19 @@ func getBCCSPKeyOpts(kr csr.KeyRequest, ephemeral bool) (opts bccsp.KeyGenOpts, 
 			// return &bccsp.ECDSAP512KeyGenOpts{Temporary: false}, nil
 			return nil, errors.New("Unsupported ECDSA key size: 521")
 		default:
-			return nil, fmt.Errorf("Invalid ECDSA key size: %d", kr.Size())
+			return nil, errors.Errorf("Invalid ECDSA key size: %d", kr.Size())
 		}
 	case "gmsm2":
 		return &bccsp.GMSM2KeyGenOpts{Temporary: ephemeral}, nil
 	default:
-		return nil, fmt.Errorf("Invalid algorithm: %s", kr.Algo())
+		return nil, errors.Errorf("Invalid algorithm: %s", kr.Algo())
 	}
 }
 
 // GetSignerFromCert load private key represented by ski and return bccsp signer that conforms to crypto.Signer
 func GetSignerFromCert(cert *x509.Certificate, csp bccsp.BCCSP) (bccsp.Key, crypto.Signer, error) {
 	if csp == nil {
-		return nil, nil, fmt.Errorf("CSP was not initialized")
+		return nil, nil, errors.New("CSP was not initialized")
 	}
 
 	log.Infof("xxxx begin csp.KeyImport,cert.PublicKey is %T   csp:%T", cert.PublicKey, csp)
@@ -264,7 +176,7 @@ func GetSignerFromCert(cert *x509.Certificate, csp bccsp.BCCSP) (bccsp.Key, cryp
 	// get the public key in the right format
 	certPubK, err := csp.KeyImport(sm2cert, &bccsp.X509PublicKeyImportOpts{Temporary: true})
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to import certificate's public key: %s", err.Error())
+		return nil, nil, errors.WithMessage(err, "Failed to import certificate's public key")
 	}
 
 	kname := hex.EncodeToString(certPubK.SKI())
@@ -323,14 +235,14 @@ func GetSignerFromSM2Cert(cert *sm2.Certificate, csp bccsp.BCCSP) (bccsp.Key, cr
 	// Get the key given the SKI value
 	privateKey, err := csp.GetKey(certPubK.SKI())
 	if err != nil {
-		return nil, nil, fmt.Errorf("Could not find matching private key for SKI: %s", err.Error())
+		return nil, nil, errors.Errorf("The private key associated with the certificate with SKI '%s' was not found", hex.EncodeToString(certPubK.SKI()))
 	}
 
 	log.Info("xxxx begin cspsigner.New()")
 	// Construct and initialize the signer
 	signer, err := cspsigner.New(csp, privateKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to load ski from bccsp: %s", err.Error())
+		return nil, nil, errors.WithMessage(err, "Failed to load ski from bccsp")
 	}
 	log.Info("xxxx end GetSignerFromCert successfuul")
 	return privateKey, signer, nil
@@ -356,41 +268,6 @@ func GetSignerFromCertFile(certFile string, csp bccsp.BCCSP) (bccsp.Key, crypto.
 	key, cspSigner, err := GetSignerFromCert(cert, csp)
 	log.Infof("+++++++++++++KEY = %T error = %v", key, err)
 	return key, cspSigner, cert, err
-	/*
-		var parsedCa *x509.Certificate
-		var err error
-		if IsGMConfig() {
-			log.Info("---------------Enter ReadCeretificateFromPem")
-			parsedSm2Ca, err := sm2.ReadCertificateFromPem(certFile)
-
-			if err != nil {
-				return nil, nil, nil, fmt.Errorf("Could not Read sm2 CertificateFromPem [%s]: %s", certFile, err.Error())
-			}
-			log.Info("---------------Enter ParseSm2Certificate2X509")
-			parsedCa = ParseSm2Certificate2X509(parsedSm2Ca)
-		} else {
-			// Load cert file
-			log.Info("---------------Enter ReadFile")
-			certBytes, err := ioutil.ReadFile(certFile)
-			if err != nil {
-				return nil, nil, nil, fmt.Errorf("Could not read certFile [%s]: %s", certFile, err.Error())
-			}
-			// Parse certificate
-			log.Info("---------------Enter ParseCertificatePEM")
-			parsedCa, err = helpers.ParseCertificatePEM(certBytes)
-
-		}
-
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		// Get the signer from the cert
-		log.Infof("---------------Enter GetSignerFromCert--parsedCa = %p", parsedCa)
-		key, cspSigner, err := GetSignerFromCert(parsedCa, csp)
-		log.Info("---------------Exit GetSignerFromCertFile")
-		//log.Info("")
-		return key, cspSigner, parsedCa, err
-	*/
 }
 
 // BCCSPKeyRequestGenerate generates keys through BCCSP
@@ -402,17 +279,12 @@ func BCCSPKeyRequestGenerate(req *csr.CertificateRequest, myCSP bccsp.BCCSP) (bc
 		return nil, nil, err
 	}
 	key, err := myCSP.KeyGen(keyOpts)
-
-	fmt.Printf("+++++++++++++++key = %T\n", key)
-
 	if err != nil {
 		return nil, nil, err
 	}
-
-	log.Info("xxxx begin cspsigner.New()")
 	cspSigner, err := cspsigner.New(myCSP, key)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed initializing CryptoSigner: %s", err.Error())
+		return nil, nil, errors.WithMessage(err, "Failed initializing CryptoSigner")
 	}
 	return key, cspSigner, nil
 }
@@ -425,9 +297,8 @@ func ImportBCCSPKeyFromPEM(keyFile string, myCSP bccsp.BCCSP, temporary bool) (b
 	}
 	key, err := utils.PEMtoPrivateKey(keyBuff, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Failed parsing private key from %s: %s", keyFile, err.Error())
+		return nil, errors.WithMessage(err, fmt.Sprintf("Failed parsing private key from %s", keyFile))
 	}
-	log.Debugf("xxxx ket sksksksks %s", key)
 	switch key.(type) {
 	case *sm2.PrivateKey:
 		opts := &factory.FactoryOpts{
@@ -457,17 +328,17 @@ func ImportBCCSPKeyFromPEM(keyFile string, myCSP bccsp.BCCSP, temporary bool) (b
 	case *ecdsa.PrivateKey:
 		priv, err := utils.PrivateKeyToDER(key.(*ecdsa.PrivateKey))
 		if err != nil {
-			return nil, fmt.Errorf("Failed to convert ECDSA private key from %s: %s", keyFile, err.Error())
+			return nil, errors.WithMessage(err, fmt.Sprintf("Failed to convert ECDSA private key for '%s'", keyFile))
 		}
 		sk, err := myCSP.KeyImport(priv, &bccsp.ECDSAPrivateKeyImportOpts{Temporary: temporary})
 		if err != nil {
-			return nil, fmt.Errorf("Failed to import ECDSA private key from %s: %s", keyFile, err.Error())
+			return nil, errors.WithMessage(err, fmt.Sprintf("Failed to import ECDSA private key for '%s'", keyFile))
 		}
 		return sk, nil
 	case *rsa.PrivateKey:
-		return nil, fmt.Errorf("Failed to import RSA key from %s; RSA private key import is not supported", keyFile)
+		return nil, errors.Errorf("Failed to import RSA key from %s; RSA private key import is not supported", keyFile)
 	default:
-		return nil, fmt.Errorf("Failed to import key from %s: invalid secret key type", keyFile)
+		return nil, errors.Errorf("Failed to import key from %s: invalid secret key type", keyFile)
 	}
 }
 
@@ -503,12 +374,12 @@ func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*tls.Certificat
 
 	if len(cert.Certificate) == 0 {
 		if len(skippedBlockTypes) == 0 {
-			return nil, fmt.Errorf("Failed to find PEM block in file %s", certFile)
+			return nil, errors.Errorf("Failed to find PEM block in file %s", certFile)
 		}
 		if len(skippedBlockTypes) == 1 && strings.HasSuffix(skippedBlockTypes[0], "PRIVATE KEY") {
-			return nil, fmt.Errorf("Failed to find certificate PEM data in file %s, but did find a private key; PEM inputs may have been switched", certFile)
+			return nil, errors.Errorf("Failed to find certificate PEM data in file %s, but did find a private key; PEM inputs may have been switched", certFile)
 		}
-		return nil, fmt.Errorf("Failed to find \"CERTIFICATE\" PEM block in file %s after skipping PEM blocks of the following types: %v", certFile, skippedBlockTypes)
+		return nil, errors.Errorf("Failed to find \"CERTIFICATE\" PEM block in file %s after skipping PEM blocks of the following types: %v", certFile, skippedBlockTypes)
 	}
 
 	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
@@ -523,11 +394,11 @@ func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*tls.Certificat
 			log.Debugf("Attempting fallback with certfile %s and keyfile %s", certFile, keyFile)
 			fallbackCerts, err := tls.LoadX509KeyPair(certFile, keyFile)
 			if err != nil {
-				return nil, fmt.Errorf("Could not get the private key %s that matches %s: %s", keyFile, certFile, err)
+				return nil, errors.Wrapf(err, "Could not get the private key %s that matches %s", keyFile, certFile)
 			}
 			cert = &fallbackCerts
 		} else {
-			return nil, fmt.Errorf("Could not load TLS certificate with BCCSP: %s", err)
+			return nil, errors.WithMessage(err, "Could not load TLS certificate with BCCSP")
 		}
 
 	}

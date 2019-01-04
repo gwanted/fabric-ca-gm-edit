@@ -17,37 +17,26 @@ limitations under the License.
 package api
 
 import (
+	"math/big"
 	"time"
 
 	"github.com/cloudflare/cfssl/csr"
-	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
-	//"github.com/tjfoc/fabric-ca-gm/lib"
+	"github.com/tjfoc/fabric-ca-gm/util"
 )
-
-
-type QuerymentRespone struct {
-		Name           string `json:"id"`
-		Pass           []byte `json:"token"`
-		Type           string `json:"type"`
-		Affiliation    string `json:"affiliation"`
-		Attributes     string `json:"attributes"`
-		State          int    `json:"state"`
-		MaxEnrollments int    `json:"max_enrollments"`
-}
 
 // RegistrationRequest for a new identity
 type RegistrationRequest struct {
 	// Name is the unique name of the identity
 	Name string `json:"id" help:"Unique name of the identity"`
 	// Type of identity being registered (e.g. "peer, app, user")
-	Type string `json:"type" help:"Type of identity being registered (e.g. 'peer, app, user')"`
+	Type string `json:"type" def:"client" help:"Type of identity being registered (e.g. 'peer, app, user')"`
 	// Secret is an optional password.  If not specified,
 	// a random secret is generated.  In both cases, the secret
 	// is returned in the RegistrationResponse.
-	Secret string `json:"secret,omitempty" help:"The enrollment secret for the identity being registered"`
+	Secret string `json:"secret,omitempty" mask:"password" help:"The enrollment secret for the identity being registered"`
 	// MaxEnrollments is the maximum number of times the secret can
 	// be reused to enroll.
-	MaxEnrollments int `json:"max_enrollments,omitempty" def:"-1" help:"The maximum number of times the secret can be reused to enroll."`
+	MaxEnrollments int `json:"max_enrollments,omitempty" help:"The maximum number of times the secret can be reused to enroll (default CA's Max Enrollment)"`
 	// is returned in the response.
 	// The identity's affiliation.
 	// For example, an affiliation of "org1.department1" associates the identity with "department1" in "org1".
@@ -56,6 +45,10 @@ type RegistrationRequest struct {
 	Attributes []Attribute `json:"attrs,omitempty"`
 	// CAName is the name of the CA to connect to
 	CAName string `json:"caname,omitempty" skip:"true"`
+}
+
+func (rr *RegistrationRequest) String() string {
+	return util.StructToString(rr)
 }
 
 // RegistrationResponse is a registration response
@@ -69,7 +62,7 @@ type EnrollmentRequest struct {
 	// The identity name to enroll
 	Name string `json:"name" skip:"true"`
 	// The secret returned via Register
-	Secret string `json:"secret,omitempty" skip:"true"`
+	Secret string `json:"secret,omitempty" skip:"true" mask:"password"`
 	// Profile is the name of the signing profile to use in issuing the certificate
 	Profile string `json:"profile,omitempty" help:"Name of the signing profile to use in issuing the certificate"`
 	// Label is the label to use in HSM operations
@@ -78,6 +71,13 @@ type EnrollmentRequest struct {
 	CSR *CSRInfo `json:"csr,omitempty" help:"Certificate Signing Request info"`
 	// CAName is the name of the CA to connect to
 	CAName string `json:"caname,omitempty" skip:"true"`
+	// AttrReqs are requests for attributes to add to the certificate.
+	// Each attribute is added only if the requestor owns the attribute.
+	AttrReqs []*AttributeRequest `json:"attr_reqs,omitempty"`
+}
+
+func (er EnrollmentRequest) String() string {
+	return util.StructToString(&er)
 }
 
 // ReenrollmentRequest is a request to reenroll an identity.
@@ -91,6 +91,9 @@ type ReenrollmentRequest struct {
 	CSR *CSRInfo `json:"csr,omitempty"`
 	// CAName is the name of the CA to connect to
 	CAName string `json:"caname,omitempty" skip:"true"`
+	// AttrReqs are requests for attributes to add to the certificate.
+	// Each attribute is added only if the requestor owns the attribute.
+	AttrReqs []*AttributeRequest `json:"attr_reqs,omitempty"`
 }
 
 // RevocationRequest is a revocation request for a single certificate or all certificates
@@ -113,6 +116,24 @@ type RevocationRequest struct {
 	Reason string `json:"reason,omitempty" opt:"r" help:"Reason for revocation"`
 	// CAName is the name of the CA to connect to
 	CAName string `json:"caname,omitempty" skip:"true"`
+	// GenCRL specifies whether to generate a CRL
+	GenCRL bool `def:"false" skip:"true" json:"gencrl,omitempty"`
+}
+
+// RevocationResponse represents response from the server for a revocation request
+type RevocationResponse struct {
+	// RevokedCerts is an array of certificates that were revoked
+	RevokedCerts []RevokedCert
+	// CRL is PEM-encoded certificate revocation list (CRL) that contains all unexpired revoked certificates
+	CRL []byte
+}
+
+// RevokedCert represents a revoked certificate
+type RevokedCert struct {
+	// Serial number of the revoked certificate
+	Serial string
+	// AKI of the revoked certificate
+	AKI string
 }
 
 // GetTCertBatchRequest is input provided to identity.GetTCertBatch
@@ -140,7 +161,16 @@ type GetTCertBatchRequest struct {
 
 // GetTCertBatchResponse is the return value of identity.GetTCertBatch
 type GetTCertBatchResponse struct {
-	tcert.GetBatchResponse
+	ID     *big.Int  `json:"id"`
+	TS     time.Time `json:"ts"`
+	Key    []byte    `json:"key"`
+	TCerts []TCert   `json:"tcerts"`
+}
+
+// TCert encapsulates a signed transaction certificate and optionally a map of keys
+type TCert struct {
+	Cert []byte            `json:"cert"`
+	Keys map[string][]byte `json:"keys,omitempty"` //base64 encoded string as value
 }
 
 // GetCAInfoRequest is request to get generic CA information
@@ -148,18 +178,184 @@ type GetCAInfoRequest struct {
 	CAName string `json:"caname,omitempty" skip:"true"`
 }
 
-// CSRInfo is Certificate Signing Request information
+// GenCRLRequest represents a request to get CRL for the specified certificate authority
+type GenCRLRequest struct {
+	CAName        string    `json:"caname,omitempty" skip:"true"`
+	RevokedAfter  time.Time `json:"revokedafter,omitempty"`
+	RevokedBefore time.Time `json:"revokedbefore,omitempty"`
+	ExpireAfter   time.Time `json:"expireafter,omitempty"`
+	ExpireBefore  time.Time `json:"expirebefore,omitempty"`
+}
+
+// GenCRLResponse represents a response to get CRL
+type GenCRLResponse struct {
+	// CRL is PEM-encoded certificate revocation list (CRL) that contains requested unexpired revoked certificates
+	CRL []byte
+}
+
+// AddIdentityRequest represents the request to add a new identity to the
+// fabric-ca-server
+type AddIdentityRequest struct {
+	ID             string      `json:"id" skip:"true"`
+	Type           string      `json:"type" def:"user" help:"Type of identity being registered (e.g. 'peer, app, user')"`
+	Affiliation    string      `json:"affiliation" help:"The identity's affiliation"`
+	Attributes     []Attribute `json:"attrs" mapstructure:"attrs" `
+	MaxEnrollments int         `json:"max_enrollments" mapstructure:"max_enrollments" help:"The maximum number of times the secret can be reused to enroll (default CA's Max Enrollment)"`
+	// Secret is an optional password.  If not specified,
+	// a random secret is generated.  In both cases, the secret
+	// is returned in the RegistrationResponse.
+	Secret string `json:"secret,omitempty" mask:"password" help:"The enrollment secret for the identity being added"`
+	CAName string `json:"caname,omitempty" skip:"true"`
+}
+
+// ModifyIdentityRequest represents the request to modify an existing identity on the
+// fabric-ca-server
+type ModifyIdentityRequest struct {
+	ID             string      `skip:"true"`
+	Type           string      `json:"type" help:"Type of identity being registered (e.g. 'peer, app, user')"`
+	Affiliation    string      `json:"affiliation" help:"The identity's affiliation"`
+	Attributes     []Attribute `mapstructure:"attrs" json:"attrs"`
+	MaxEnrollments int         `mapstructure:"max_enrollments" json:"max_enrollments" help:"The maximum number of times the secret can be reused to enroll"`
+	Secret         string      `json:"secret,omitempty" mask:"password" help:"The enrollment secret for the identity"`
+	CAName         string      `json:"caname,omitempty" skip:"true"`
+}
+
+// RemoveIdentityRequest represents the request to remove an existing identity from the
+// fabric-ca-server
+type RemoveIdentityRequest struct {
+	ID     string `skip:"true"`
+	Force  bool   `json:"force"`
+	CAName string `json:"caname,omitempty" skip:"true"`
+}
+
+// GetIDResponse is the response from the GetIdentity call
+type GetIDResponse struct {
+	ID             string      `json:"id" skip:"true"`
+	Type           string      `json:"type" def:"user"`
+	Affiliation    string      `json:"affiliation"`
+	Attributes     []Attribute `json:"attrs" mapstructure:"attrs" `
+	MaxEnrollments int         `json:"max_enrollments" mapstructure:"max_enrollments"`
+	CAName         string      `json:"caname,omitempty"`
+}
+
+// GetAllIDsResponse is the response from the GetAllIdentities call
+type GetAllIDsResponse struct {
+	Identities []IdentityInfo `json:"identities"`
+	CAName     string         `json:"caname,omitempty"`
+}
+
+// IdentityResponse is the response from the any add/modify/remove identity call
+type IdentityResponse struct {
+	ID             string      `json:"id" skip:"true"`
+	Type           string      `json:"type,omitempty"`
+	Affiliation    string      `json:"affiliation"`
+	Attributes     []Attribute `json:"attrs,omitempty" mapstructure:"attrs"`
+	MaxEnrollments int         `json:"max_enrollments,omitempty" mapstructure:"max_enrollments"`
+	Secret         string      `json:"secret,omitempty"`
+	CAName         string      `json:"caname,omitempty"`
+}
+
+// IdentityInfo contains information about an identity
+type IdentityInfo struct {
+	ID             string      `json:"id"`
+	Type           string      `json:"type"`
+	Affiliation    string      `json:"affiliation"`
+	Attributes     []Attribute `json:"attrs" mapstructure:"attrs"`
+	MaxEnrollments int         `json:"max_enrollments" mapstructure:"max_enrollments"`
+}
+
+// AddAffiliationRequest represents the request to add a new affiliation to the
+// fabric-ca-server
+type AddAffiliationRequest struct {
+	Name   string `json:"name"`
+	Force  bool   `json:"force"`
+	CAName string `json:"caname,omitempty"`
+}
+
+// ModifyAffiliationRequest represents the request to modify an existing affiliation on the
+// fabric-ca-server
+type ModifyAffiliationRequest struct {
+	Name    string
+	NewName string `json:"name"`
+	Force   bool   `json:"force"`
+	CAName  string `json:"caname,omitempty"`
+}
+
+// RemoveAffiliationRequest represents the request to remove an existing affiliation from the
+// fabric-ca-server
+type RemoveAffiliationRequest struct {
+	Name   string
+	Force  bool   `json:"force"`
+	CAName string `json:"caname,omitempty"`
+}
+
+// AffiliationResponse contains the response for get, add, modify, and remove an affiliation
+type AffiliationResponse struct {
+	AffiliationInfo `mapstructure:",squash"`
+	CAName          string `json:"caname,omitempty"`
+}
+
+// AffiliationInfo contains the affiliation name, child affiliation info, and identities
+// associated with this affiliation.
+type AffiliationInfo struct {
+	Name         string            `json:"name"`
+	Affiliations []AffiliationInfo `json:"affiliations,omitempty"`
+	Identities   []IdentityInfo    `json:"identities,omitempty"`
+}
+
+// CSRInfo is Certificate Signing Request (CSR) Information
 type CSRInfo struct {
-	CN           string               `json:"CN"`
-	Names        []csr.Name           `json:"names,omitempty"`
-	Hosts        []string             `json:"hosts,omitempty"`
-	KeyRequest   *csr.BasicKeyRequest `json:"key,omitempty"`
-	CA           *csr.CAConfig        `json:"ca,omitempty"`
-	SerialNumber string               `json:"serial_number,omitempty"`
+	CN           string           `json:"CN"`
+	Names        []csr.Name       `json:"names,omitempty"`
+	Hosts        []string         `json:"hosts,omitempty"`
+	KeyRequest   *BasicKeyRequest `json:"key,omitempty"`
+	CA           *csr.CAConfig    `json:"ca,omitempty"`
+	SerialNumber string           `json:"serial_number,omitempty"`
+}
+
+// BasicKeyRequest encapsulates size and algorithm for the key to be generated
+type BasicKeyRequest struct {
+	Algo string `json:"algo" yaml:"algo"`
+	Size int    `json:"size" yaml:"size"`
 }
 
 // Attribute is a name and value pair
 type Attribute struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
+	ECert bool   `json:"ecert,omitempty"`
+}
+
+// GetName returns the name of the attribute
+func (a *Attribute) GetName() string {
+	return a.Name
+}
+
+// GetValue returns the value of the attribute
+func (a *Attribute) GetValue() string {
+	return a.Value
+}
+
+// AttributeRequest is a request for an attribute.
+// This implements the certmgr/AttributeRequest interface.
+type AttributeRequest struct {
+	Name     string `json:"name"`
+	Optional bool   `json:"optional,omitempty"`
+}
+
+// GetName returns the name of an attribute being requested
+func (ar *AttributeRequest) GetName() string {
+	return ar.Name
+}
+
+// IsRequired returns true if the attribute being requested is required
+func (ar *AttributeRequest) IsRequired() bool {
+	return !ar.Optional
+}
+
+// NewBasicKeyRequest returns the BasicKeyRequest object that is constructed
+// from the object returned by the csr.NewBasicKeyRequest() function
+func NewBasicKeyRequest() *BasicKeyRequest {
+	bkr := csr.NewBasicKeyRequest()
+	return &BasicKeyRequest{Algo: bkr.A, Size: bkr.S}
 }

@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-FABRIC_CA="$GOPATH/src/github.com/tjfoc/gmca"
+FABRIC_CA="$GOPATH/src/github.com/hyperledger/fabric-ca"
 SCRIPTDIR="$FABRIC_CA/scripts/fvt"
 . $SCRIPTDIR/fabric-ca_utils
 PKI="$SCRIPTDIR/utils/pki"
@@ -21,6 +21,14 @@ next_year=$((curr_year+1))
 past=$(date +"$prev_year%m%d%H%M%SZ")
 now=$(date +"%g%m%d%H%M%SZ")
 future=$(date +"$next_year%m%d%H%M%SZ")
+
+NUM_SERVERS=4
+USER_SERVER_RATIO=8
+for u in $(eval echo {1..$((NUM_SERVERS*USER_SERVER_RATIO-1))}); do
+   USERS[u]="user$u"
+done
+NUM_USERS=${#USERS[*]}
+EXPECTED_DISTRIBUTION=$(((NUM_USERS+1)*2/$NUM_SERVERS))
 
 . $SCRIPTDIR/fabric-ca_utils
 
@@ -60,7 +68,7 @@ cd $CERT_HOME
 cp $TESTDATA/TestCRL.crl $CERT_HOME
 python -m SimpleHTTPServer $HTTP_PORT &
 HTTP_PID=$!
-pollServer python localhost "$HTTP_PORT" || ErrorExit "Failed to start HTTP server"
+pollSimpleHttp
 echo $HTTP_PID
 trap "kill $HTTP_PID; CleanUp 1; exit 1" INT
 
@@ -72,41 +80,36 @@ for driver in sqlite3 postgres mysql; do
    echo "------> BEGIN TESTING $driver <----------"
    # note MAX_ENROLLMENTS defaults to '1'
    $SCRIPTDIR/fabric-ca_setup.sh -R -d $driver -x $CA_CFG_PATH
-   $SCRIPTDIR/fabric-ca_setup.sh -I -S -X -n4 -d $driver -x $CA_CFG_PATH
+   $SCRIPTDIR/fabric-ca_setup.sh -I -S -X -n $NUM_SERVERS -d $driver -x $CA_CFG_PATH
    if test $? -ne 0; then
       ErrorMsg "Failed to setup server"
       continue
    fi
+   enroll $REGISTRAR
    enroll $REGISTRAR
    if test $? -ne 0; then
       ErrorMsg "Failed to enroll $REGISTRAR"
       continue
    fi
 
-   for i in {1..4}; do
+   for i in $(eval echo {1..$NUM_USERS}); do
       OUT=$(register $REGISTRAR user${i})
       pswd[$i]=$(echo $OUT | tail -n1 | awk '{print $NF}')
       echo $pswd
    done
 
-   for i in {1..4}; do
+   for i in $(eval echo {1..$NUM_USERS}); do
       enroll user${i} ${pswd[i]}
       test $? -ne 0 && ErrorMsg "Failed to reenroll user${i}"
    done
 
-   for i in 1 2 3 4 1 2 3; do
-      # sqaure up the number of requests to each of 4 servers by additional requests
-       reenroll user${i} "$CA_CFG_PATH/user${i}/$MSP_CERT_DIR/cert.pem" "$CA_CFG_PATH/user${i}/$MSP_KEY_DIR/key.pem"
-       test $? -ne 0 && ErrorMsg "Failed to reenroll user${i}"
-   done
-   # all servers should register 4 successful requests
-   # but...it's only available when tls is disabled
-   if test "$FABRIC_TLS" = 'false'; then
-      for s in {1..4}; do
+   if ! $(${FABRIC_TLS:-false}); then
+      nums=$((NUM_SERVERS-1))
+      for s in $(eval echo {0..$nums}); do
          curl -s http://${HOST}/ | awk -v s="server${s}" '$0~s'|html2text|grep HTTP
-         verifyServerTraffic $HOST server${s} 4
+         verifyServerTraffic $HOST server${s} $EXPECTED_DISTRIBUTION
          test $? -ne 0 && ErrorMsg "Distributed traffic to server FAILED"
-         sleep 1
+         sleep .1
       done
    fi
 
