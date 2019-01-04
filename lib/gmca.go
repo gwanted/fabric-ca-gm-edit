@@ -20,8 +20,8 @@ import (
 	"github.com/cloudflare/cfssl/csr"
 	"github.com/cloudflare/cfssl/log"
 	"github.com/tjfoc/gmsm/sm2"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/gm"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/bccsp/gm"
 
 	"github.com/cloudflare/cfssl/signer"
 	"github.com/tjfoc/fabric-ca-gm/util"
@@ -63,7 +63,7 @@ func signCert(req signer.SignRequest, ca *CA) (cert []byte, err error) {
 
 		return nil, err
 	}
-
+	log.Infof("^^^^^^^^^^^^^^^^^^^^^^^x509cert = %v",x509cert)
 	rootca := ParseX509Certificate2Sm2(x509cert)
 
 	cert, err = gm.CreateCertificateToMem(template, rootca, rootkey)

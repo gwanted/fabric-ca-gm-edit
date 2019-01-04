@@ -18,7 +18,6 @@ package api
 
 import (
 	"github.com/cloudflare/cfssl/signer"
-	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
 )
 
 /*
@@ -26,15 +25,6 @@ import (
  * and responses which flow over the network between a fabric-ca client
  * and the fabric-ca server.
  */
-
-
-// type QuerymentRequestNet struct {
-	//QuerymentRequest	
-//}
-
-type QuerymentResponseNet struct {
-	QuerymentRespone
-}
 
 // RegistrationRequestNet is the registration request for a new identity
 type RegistrationRequestNet struct {
@@ -49,14 +39,16 @@ type RegistrationResponseNet struct {
 // EnrollmentRequestNet is a request to enroll an identity
 type EnrollmentRequestNet struct {
 	signer.SignRequest
-	CAName string
+	CAName   string
+	AttrReqs []*AttributeRequest `json:"attr_reqs,omitempty"`
 }
 
 // ReenrollmentRequestNet is a request to reenroll an identity.
 // This is useful to renew a certificate before it has expired.
 type ReenrollmentRequestNet struct {
 	signer.SignRequest
-	CAName string
+	CAName   string
+	AttrReqs []*AttributeRequest `json:"attr_reqs,omitempty"`
 }
 
 // RevocationRequestNet is a revocation request which flows over the network
@@ -80,10 +72,28 @@ type GetTCertBatchRequestNet struct {
 
 // GetTCertBatchResponseNet is the network response for a batch of transaction certificates
 type GetTCertBatchResponseNet struct {
-	tcert.GetBatchResponse
+	GetTCertBatchResponse
 }
 
+// AddIdentityRequestNet is a network request for adding a new identity
+type AddIdentityRequestNet struct {
+	AddIdentityRequest
+}
 
+// ModifyIdentityRequestNet is a network request for modifying an existing identity
+type ModifyIdentityRequestNet struct {
+	ModifyIdentityRequest
+}
+
+// AddAffiliationRequestNet is a network request for adding a new affiliation
+type AddAffiliationRequestNet struct {
+	AddAffiliationRequest
+}
+
+// ModifyAffiliationRequestNet is a network request for modifying an existing affiliation
+type ModifyAffiliationRequestNet struct {
+	ModifyAffiliationRequest
+}
 
 // KeySig is a public key, signature, and signature algorithm tuple
 type KeySig struct {

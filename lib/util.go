@@ -20,16 +20,20 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"strings"
-	//"github.com/tjfoc/hyperledger-fabric-gm/bccsp/gm/sm2"
+
+	"github.com/pkg/errors"
+
 	"github.com/cloudflare/cfssl/log"
-	"github.com/spf13/viper"
 	"github.com/tjfoc/fabric-ca-gm/api"
+	"github.com/tjfoc/fabric-ca-gm/lib/spi"
 	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/spf13/viper"
 	"github.com/tjfoc/gmsm/sm2"
 )
 
@@ -60,7 +64,7 @@ func BytesToX509Cert(bytes []byte) (*x509.Certificate, error) {
 	}
 	cert, err := x509.ParseCertificate(bytes)
 	if err != nil {
-		return nil, fmt.Errorf("buffer was neither PEM nor DER encoding: %s", err)
+		return nil, errors.Wrap(err, "Buffer was neither PEM nor DER encoding")
 	}
 	return cert, err
 }
@@ -87,69 +91,34 @@ func LoadPEMCertPool(certFiles []string) (*x509.CertPool, error) {
 	return certPool, nil
 }
 
-// UnmarshalConfig will use the viperunmarshal workaround to unmarshal a
-// configuration file into a struct
-func UnmarshalConfig(config interface{}, vp *viper.Viper, configFile string, server, viperIssue327WorkAround bool) error {
+// UnmarshalConfig unmarshals a configuration file
+func UnmarshalConfig(config interface{}, vp *viper.Viper, configFile string,
+	server bool) error {
+
 	vp.SetConfigFile(configFile)
 	err := vp.ReadInConfig()
 	if err != nil {
-		return fmt.Errorf("Failed to read config file: %s", err)
+		return errors.Wrapf(err, "Failed to read config file '%s'", configFile)
 	}
 
-	// Unmarshal the config into 'caConfig'
-	// When viper bug https://github.com/spf13/viper/issues/327 is fixed
-	// and vendored, the work around code can be deleted.
-	if viperIssue327WorkAround {
-		sliceFields := []string{
-			"csr.hosts",
-			"tls.clientauth.certfiles",
-			"ldap.tls.certfiles",
-			"db.tls.certfiles",
-			"cafiles",
-			"intermediate.tls.certfiles",
-		}
-		err = util.ViperUnmarshal(config, sliceFields, vp)
+	err = vp.Unmarshal(config)
+	if err != nil {
+		return errors.Wrapf(err, "Incorrect format in file '%s'", configFile)
+	}
+	if server {
+		serverCfg := config.(*ServerConfig)
+		err = vp.Unmarshal(&serverCfg.CAcfg)
 		if err != nil {
-			return fmt.Errorf("Incorrect format in file '%s': %s", configFile, err)
-		}
-		if server {
-			serverCfg := config.(*ServerConfig)
-			err = util.ViperUnmarshal(&serverCfg.CAcfg, sliceFields, vp)
-			if err != nil {
-				return fmt.Errorf("Incorrect format in file '%s': %s", configFile, err)
-			}
-		}
-	} else {
-		err = vp.Unmarshal(config)
-		if err != nil {
-			return fmt.Errorf("Incorrect format in file '%s': %s", configFile, err)
-		}
-		if server {
-			serverCfg := config.(*ServerConfig)
-			err = vp.Unmarshal(&serverCfg.CAcfg)
-			if err != nil {
-				return fmt.Errorf("Incorrect format in file '%s': %s", configFile, err)
-			}
+			return errors.Wrapf(err, "Incorrect format in file '%s'", configFile)
 		}
 	}
 	return nil
 }
 
-// GetAttrValue searches 'attrs' for the attribute with name 'name' and returns
-// its value, or "" if not found.
-func GetAttrValue(attrs []api.Attribute, name string) string {
-	for _, attr := range attrs {
-		if attr.Name == name {
-			return attr.Value
-		}
-	}
-	return ""
-}
-
 func getMaxEnrollments(userMaxEnrollments int, caMaxEnrollments int) (int, error) {
 	log.Debugf("Max enrollment value verification - User specified max enrollment: %d, CA max enrollment: %d", userMaxEnrollments, caMaxEnrollments)
 	if userMaxEnrollments < -1 {
-		return 0, fmt.Errorf("Max enrollment in registration request may not be less than -1, but was %d", userMaxEnrollments)
+		return 0, errors.Errorf("Max enrollment in registration request may not be less than -1, but was %d", userMaxEnrollments)
 	}
 	switch caMaxEnrollments {
 	case -1:
@@ -173,13 +142,46 @@ func getMaxEnrollments(userMaxEnrollments int, caMaxEnrollments int) (int, error
 		default:
 			// User is requesting a specific positive value; make sure it doesn't exceed the CA maximum.
 			if userMaxEnrollments > caMaxEnrollments {
-				return 0, fmt.Errorf("Requested enrollments (%d) exceeds maximum allowable enrollments (%d)",
+				return 0, errors.Errorf("Requested enrollments (%d) exceeds maximum allowable enrollments (%d)",
 					userMaxEnrollments, caMaxEnrollments)
 			}
 			// otherwise, use the requested maximum
 			return userMaxEnrollments, nil
 		}
 	}
+}
+
+// GetUserAffiliation return a joined version version of the affiliation path with '.' as the seperator
+func GetUserAffiliation(user spi.User) string {
+	return strings.Join(user.GetAffiliationPath(), ".")
+}
+
+func addQueryParm(req *http.Request, name, value string) {
+	url := req.URL.Query()
+	url.Add(name, value)
+	req.URL.RawQuery = url.Encode()
+}
+
+// IdentityDecoder decodes streams of data coming from the server into an Identity object
+func IdentityDecoder(decoder *json.Decoder) error {
+	var id api.IdentityInfo
+	err := decoder.Decode(&id)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Name: %s, Type: %s, Affiliation: %s, Max Enrollments: %d, Attributes: %+v\n", id.ID, id.Type, id.Affiliation, id.MaxEnrollments, id.Attributes)
+	return nil
+}
+
+// AffiliationDecoder decodes streams of data coming from the server into an Affiliation object
+func AffiliationDecoder(decoder *json.Decoder) error {
+	var aff api.AffiliationInfo
+	err := decoder.Decode(&aff)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s\n", aff.Name)
+	return nil
 }
 
 // SM2证书请求 转换 X509 证书请求

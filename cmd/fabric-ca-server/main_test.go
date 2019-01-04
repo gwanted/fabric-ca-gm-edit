@@ -18,6 +18,7 @@ package main
 
 import (
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -26,8 +27,10 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/tjfoc/fabric-ca-gm/api"
+	"github.com/tjfoc/fabric-ca-gm/lib"
+	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
 	"github.com/tjfoc/fabric-ca-gm/util"
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -47,7 +50,6 @@ var (
 
 // Create a config element in unexpected format
 var badSyntaxYaml = "bad.yaml"
-var ymlWithoutCAName = "noCAName.yml"
 
 // Unsupported file type
 var unsupportedFileType = "config.txt"
@@ -59,16 +61,20 @@ type TestData struct {
 
 // checkTest validates success cases
 func checkTest(in *TestData, t *testing.T) {
-	err := RunMain(in.input)
+	os.Args = in.input
+	scmd := NewCommand(in.input[1], blockingStart)
+	// Execute the command
+	err := scmd.Execute()
 	if err != nil {
 		t.Errorf("FAILED:\n \tin: %v;\n \tout: %v\n \texpected: SUCCESS\n", in.input, err.Error())
+	} else {
+		signingProfile := scmd.cfg.CAcfg.Signing.Default
+		ku, eku, unk := signingProfile.Usages()
+		// expected key usage is digital signature
+		assert.Equal(t, x509.KeyUsageDigitalSignature, ku, "Expected KeyUsageDigitalSignature")
+		assert.Equal(t, 0, len(eku), "Found %d extended usages but expected 0", len(eku))
+		assert.Equal(t, 0, len(unk), "Found %d unknown key usages", len(unk))
 	}
-	signingProfile := serverCfg.CAcfg.Signing.Default
-	ku, eku, unk := signingProfile.Usages()
-	// expected key usage is digital signature
-	assert.Equal(t, x509.KeyUsageDigitalSignature, ku, "Expected KeyUsageDigitalSignature")
-	assert.Equal(t, 0, len(eku), "Found %d extended usages but expected 0", len(eku))
-	assert.Equal(t, 0, len(unk), "Found %d unknown key usages", len(unk))
 }
 
 // errorTest validates error cases
@@ -84,60 +90,52 @@ func errorTest(in *TestData, t *testing.T) {
 	}
 }
 
-// Tests for the getCAName function
-func TestGetCAName(t *testing.T) {
-	var testCases = []struct {
-		input    string // input
-		expected string // expected result
-	}{
-		{"server1.acme.com", "acme.com"},
-		{"server1.net1.acme.com", "net1.acme.com"},
-		{".com", "com"},
-		{"server2", "server2"},
-		{"foo.", "foo."},
-		{".", "."},
-	}
-	for _, tc := range testCases {
-		n := getCAName(tc.input)
-		if n != tc.expected {
-			t.Errorf("getCAName returned unexpected value '%s' for '%s', expected value is '%s'",
-				n, tc.input, tc.expected)
-		}
+func TestMain(m *testing.M) {
+	metadata.Version = "1.1.0"
+	os.Exit(m.Run())
+}
+
+func TestNoArguments(t *testing.T) {
+	err := RunMain([]string{cmdName})
+	if err == nil {
+		assert.Error(t, errors.New("Should have resulted in an error as no agruments provided"))
 	}
 }
 
 func TestErrors(t *testing.T) {
 	os.Unsetenv(homeEnvVar)
 	_ = ioutil.WriteFile(badSyntaxYaml, []byte("signing: true\n"), 0644)
-	exp := regexp.MustCompile(".*<<<CANAME>>>.*")
-	cfg := exp.ReplaceAllString(defaultCfgTemplate, "")
-	_ = ioutil.WriteFile(ymlWithoutCAName, []byte(cfg), 0644)
 
 	errorCases := []TestData{
 		{[]string{cmdName, "init", "-c", initYaml}, "option is required"},
-		{[]string{cmdName, "init", "-n", "acme.com", "-b", "user::"}, "Failed to read"},
-		{[]string{cmdName, "init", "-b", "user:pass", "-n", "acme.com", "ca.key"}, "too many arguments"},
+		{[]string{cmdName, "init", "-c", initYaml, "-n", "acme.com", "-b", "user::"}, "Failed to read"},
+		{[]string{cmdName, "init", "-b", "user:pass", "-n", "acme.com", "ca.key"}, "Unrecognized arguments found"},
 		{[]string{cmdName, "init", "-c", badSyntaxYaml, "-b", "user:pass"}, "Incorrect format"},
 		{[]string{cmdName, "init", "-c", initYaml, "-b", fmt.Sprintf("%s:foo", longUserName)}, "than 1024 characters"},
 		{[]string{cmdName, "init", "-c", fmt.Sprintf("/tmp/%s.yaml", longFileName), "-b", "user:pass"}, "file name too long"},
-		{[]string{cmdName, "init", "-c", unsupportedFileType}, "Unsupported Config Type"},
+		{[]string{cmdName, "init", "-b", "user:pass", "-c", unsupportedFileType}, "Unsupported Config Type"},
 		{[]string{cmdName, "init", "-c", initYaml, "-b", "user"}, "missing a colon"},
 		{[]string{cmdName, "init", "-c", initYaml, "-b", "user:"}, "empty password"},
 		{[]string{cmdName, "bogus", "-c", initYaml, "-b", "user:pass"}, "unknown command"},
 		{[]string{cmdName, "start", "-c"}, "needs an argument:"},
-		{[]string{cmdName, "start", "-c", startYaml, "-b", "user:pass", "ca.key"}, "too many arguments"},
+		{[]string{cmdName, "start", "-c", startYaml, "-b", "user:pass", "ca.key"}, "Unrecognized arguments found"},
 	}
 
-	// Explicitly set the default for ca.name to "", this is to test if server
-	// does not start if ca.name is not specified
-	viper.SetDefault("ca.name", "")
 	for _, e := range errorCases {
 		errorTest(&e, t)
 		_ = os.Remove(initYaml)
 	}
-	// We are done with all error cases. Now, set the ca.name default value to
-	// "acme.com", as ca.name is a required property for server to start
-	viper.SetDefault("ca.name", "acme.com")
+}
+
+func TestOneTimePass(t *testing.T) {
+	testDir := "oneTimePass"
+	os.RemoveAll(testDir)
+	defer os.RemoveAll(testDir)
+	// Test with "-b" option
+	err := RunMain([]string{cmdName, "init", "-b", "admin:adminpw", "--registry.maxenrollments", "1", "-H", testDir})
+	if err != nil {
+		t.Fatalf("Failed to init server with one time passwords: %s", err)
+	}
 }
 
 func TestLDAP(t *testing.T) {
@@ -166,7 +164,7 @@ func TestValid(t *testing.T) {
 	validCases := []TestData{
 		{[]string{cmdName, "init", "-b", "admin:a:d:m:i:n:p:w"}, ""},
 		{[]string{cmdName, "init", "-d"}, ""},
-		{[]string{cmdName, "start", "-c", startYaml}, ""},
+		{[]string{cmdName, "start", "-c", startYaml, "-b", "admin:admin"}, ""},
 	}
 
 	for _, v := range validCases {
@@ -240,17 +238,41 @@ func TestDefaultMultiCAs(t *testing.T) {
 		t.Error("Failed to start server with multiple default CAs using the --cacount flag from command line: ", err)
 	}
 
-	if !util.FileExists("ca/ca4/fabric-ca-server.db") {
+	if !util.FileExists("ca/ca4/fabric-ca-server_ca4.db") {
 		t.Error("Failed to create 4 default CA instances")
 	}
 
 	os.RemoveAll("ca")
 }
 
+func TestCACountWithAbsPath(t *testing.T) {
+	testDir := "myTestDir"
+	defer os.RemoveAll(testDir)
+	// Run init to create the ca-cert.pem
+	err := RunMain([]string{cmdName, "init", "-H", testDir, "-b", "user:pass"})
+	if err != nil {
+		t.Fatalf("Failed to init CA: %s", err)
+	}
+	// Set the complete path to the ca-cert.pem file
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Failed to get current working directory: %s", err)
+	}
+	certFilePath := path.Join(cwd, testDir, "ca-cert.pem")
+	// Init again with the absolute path to ca-cert.pem and --cacount to make sure this works
+	err = RunMain([]string{cmdName, "init", "-H", testDir, "--ca.certfile", certFilePath, "--cacount", "2"})
+	if err != nil {
+		t.Fatalf("Failed to init multi CA with absolute path: %s", err)
+	}
+}
+
 func TestMultiCA(t *testing.T) {
 	blockingStart = false
 
-	err := RunMain([]string{cmdName, "start", "-d", "-p", "7056", "-c", "../../testdata/test.yaml", "-b", "user:pass", "--cacount", "0", "--cafiles", "ca/rootca/ca1/fabric-ca-server-config.yaml", "--cafiles", "ca/rootca/ca2/fabric-ca-server-config.yaml"})
+	cleanUpMultiCAFiles()
+	defer cleanUpMultiCAFiles()
+
+	err := RunMain([]string{cmdName, "start", "-d", "-p", "7056", "-c", "../../testdata/test.yaml", "-b", "user:pass", "--cafiles", "ca/rootca/ca1/fabric-ca-server-config.yaml", "--cafiles", "ca/rootca/ca2/fabric-ca-server-config.yaml"})
 	if err != nil {
 		t.Error("Failed to start server with multiple CAs using the --cafiles flag from command line: ", err)
 	}
@@ -263,8 +285,89 @@ func TestMultiCA(t *testing.T) {
 	if err == nil {
 		t.Error("Should have failed to start server, can't specify values for both --cacount and --cafiles")
 	}
+}
 
-	cleanUpMultiCAFiles()
+// Tests to see that the bootstrap by default has permission to register any attibute
+func TestRegistrarAttribute(t *testing.T) {
+	var err error
+	blockingStart = false
+
+	err = os.Setenv("FABRIC_CA_SERVER_HOME", "testregattr/server")
+	if !assert.NoError(t, err, "Failed to set environment variable") {
+		t.Fatal("Failed to set environment variable")
+	}
+
+	args := TestData{[]string{cmdName, "start", "-b", "admin:admin", "-p", "7096", "-d"}, ""}
+	os.Args = args.input
+	scmd := NewCommand(args.input[1], blockingStart)
+	// Execute the command
+	err = scmd.Execute()
+	if !assert.NoError(t, err, "Failed to start server") {
+		t.Fatal("Failed to start server")
+	}
+
+	client := getTestClient(7096, "testregattr/client")
+
+	resp, err := client.Enroll(&api.EnrollmentRequest{
+		Name:   "admin",
+		Secret: "admin",
+	})
+	if !assert.NoError(t, err, "Failed to enroll 'admin'") {
+		t.Fatal("Failed to enroll 'admin'")
+	}
+
+	adminIdentity := resp.Identity
+
+	_, err = adminIdentity.Register(&api.RegistrationRequest{
+		Name: "testuser",
+		Attributes: []api.Attribute{
+			api.Attribute{
+				Name:  "hf.Revoker",
+				Value: "true",
+			},
+			api.Attribute{
+				Name:  "hf.IntermediateCA",
+				Value: "true",
+			},
+			api.Attribute{
+				Name:  "hf.Registrar.Roles",
+				Value: "peer,client",
+			},
+		},
+	})
+	assert.NoError(t, err, "Bootstrap user 'admin' should have been able to register a user with attributes")
+}
+
+// TestTLSEnabledButCertfileNotSpecified tests if the server with default config starts
+// fine with --tls.enabled and with or without --tls.certfile flag. When
+// --tls.certfile is not specified, it should use default name 'tls-cert.pem'
+func TestTLSEnabledButCertfileNotSpecified(t *testing.T) {
+	blockingStart = false
+	rootHomeDir := "tlsintCATestRootSrvHome"
+	err := os.RemoveAll(rootHomeDir)
+	if err != nil {
+		t.Fatalf("Failed to remove directory %s: %s", rootHomeDir, err)
+	}
+	defer os.RemoveAll(rootHomeDir)
+
+	err = RunMain([]string{cmdName, "start", "-p", "7100", "-H", rootHomeDir, "-d", "-b", "admin:admin", "--tls.enabled"})
+	if err != nil {
+		t.Error("Server should not have failed to start when TLS is enabled and TLS cert file name is not specified...it should have used default TLS cert file name 'tls-cert.pem'", err)
+	}
+
+	// start the root server with TLS enabled
+	err = RunMain([]string{cmdName, "start", "-p", "7101", "-H", rootHomeDir, "-d", "-b", "admin:admin", "--tls.enabled",
+		"--tls.certfile", "tls-cert.pem"})
+	if err != nil {
+		t.Error("Server should not have failed to start when TLS is enabled and TLS cert file name is specified.", err)
+	}
+}
+
+func TestVersion(t *testing.T) {
+	err := RunMain([]string{cmdName, "version"})
+	if err != nil {
+		t.Error("Failed to get fabric-ca-server version: ", err)
+	}
 }
 
 // Run server with specified args and check if the configuration and datasource
@@ -286,7 +389,6 @@ func TestClean(t *testing.T) {
 	os.Remove(initYaml)
 	os.Remove(startYaml)
 	os.Remove(badSyntaxYaml)
-	os.Remove(ymlWithoutCAName)
 	os.Remove(fmt.Sprintf("/tmp/%s.yaml", longFileName))
 	os.Remove(unsupportedFileType)
 	os.Remove("ca-key.pem")
@@ -298,20 +400,28 @@ func TestClean(t *testing.T) {
 	os.Remove("../../testdata/fabric-ca-server.db")
 	os.Remove("../../testdata/ca-cert.pem")
 	os.RemoveAll(ldapTestDir)
+	os.RemoveAll("testregattr")
 }
 
 func cleanUpMultiCAFiles() {
 	caFolder := "../../testdata/ca/rootca"
 	nestedFolders := []string{"ca1", "ca2"}
-	removeFiles := []string{"ca-cert.pem", "ca-key.pem", "fabric-ca-server.db", "fabric-ca2-server.db"}
+	removeFiles := []string{"msp", "ca-cert.pem", "ca-key.pem", "fabric-ca-server.db", "fabric-ca2-server.db"}
 
 	for _, nestedFolder := range nestedFolders {
 		path := filepath.Join(caFolder, nestedFolder)
 		for _, file := range removeFiles {
-			os.Remove(filepath.Join(path, file))
+			os.RemoveAll(filepath.Join(path, file))
 		}
 		os.RemoveAll(filepath.Join(path, "msp"))
 	}
 
 	os.Remove("../../testdata/test.yaml")
+}
+
+func getTestClient(port int, homeDir string) *lib.Client {
+	return &lib.Client{
+		Config:  &lib.ClientConfig{URL: fmt.Sprintf("http://localhost:%d", port)},
+		HomeDir: homeDir,
+	}
 }

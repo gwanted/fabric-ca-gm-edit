@@ -17,75 +17,52 @@ limitations under the License.
 package lib
 
 import (
-	"crypto/x509"
-	"fmt"
-	"io/ioutil"
-	"net/http"
-
-	cfsslapi "github.com/cloudflare/cfssl/api"
-	cerr "github.com/cloudflare/cfssl/errors"
-	"github.com/cloudflare/cfssl/log"
 	"github.com/tjfoc/fabric-ca-gm/api"
 	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
-	"github.com/tjfoc/fabric-ca-gm/util"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/pkg/errors"
 )
 
-// Handler for tcert requests
-type tcertHandler struct {
-	server *Server
-}
-
-// newTCertHandler is constructor for tcert handler
-func newTCertHandler(server *Server) (h http.Handler, err error) {
-	handler := &cfsslapi.HTTPHandler{
-		Handler: &tcertHandler{server: server},
+func newTCertEndpoint(s *Server) *serverEndpoint {
+	return &serverEndpoint{
 		Methods: []string{"POST"},
+		Handler: tcertHandler,
+		Server:  s,
 	}
-	return handler, nil
 }
 
 // Handle a tcert request
-func (h *tcertHandler) Handle(w http.ResponseWriter, r *http.Request) error {
-	err := h.handle(w, r)
+func tcertHandler(ctx *serverRequestContext) (interface{}, error) {
+	// Authenticate caller
+	id, err := ctx.TokenAuthentication()
 	if err != nil {
-		return cerr.NewBadRequest(err)
+		return nil, err
 	}
-	return nil
-}
-
-func (h *tcertHandler) handle(w http.ResponseWriter, r *http.Request) error {
-	// Read and unmarshall the request body
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return fmt.Errorf("Failure reading request body: %s", err)
-	}
+	// Read request body
 	req := &api.GetTCertBatchRequestNet{}
-	err = util.Unmarshal(body, req, "tcert request")
+	err = ctx.ReadBody(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	// Get the CA targeted by this request
-	ca := h.server.caMap[r.Header.Get(caHdrName)]
-
-	// Get an X509 certificate from the authorization header associated with the caller
-	cert, err := getCertFromAuthHdr(r)
+	// Get the targeted CA
+	ca, err := ctx.GetCA()
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	// Get the user's attribute values and affiliation path
-	id := tcert.GetEnrollmentIDFromCert(cert)
-	attrs, affiliationPath, err := h.getUserInfo(id, req.AttrNames, ca)
+	// Get requested attribute values for caller and affiliation path
+	caller, err := ctx.GetCaller()
 	if err != nil {
-		return err
+		return nil, err
 	}
-
+	attrs, err := caller.GetAttributes(req.AttrNames)
+	if err != nil {
+		return nil, errors.Errorf("Failed to get attributes '%s': %s", req.AttrNames, err)
+	}
+	affiliationPath := caller.GetAffiliationPath()
 	// Get the prekey associated with the affiliation path
 	prekey, err := ca.keyTree.GetKey(affiliationPath)
 	if err != nil {
-		return fmt.Errorf("Failed to get prekey for identity %s: %s", id, err)
+		return nil, newHTTPErr(500, ErrNoPreKey, "Failed to get prekey for identity %s: %s", id, err)
 	}
 	// TODO: When the TCert library is based on BCCSP, we will pass the prekey
 	//       directly.  Converting the SKI to a string is a temporary kludge
@@ -93,58 +70,18 @@ func (h *tcertHandler) handle(w http.ResponseWriter, r *http.Request) error {
 	prekeyStr := string(prekey.SKI())
 
 	// Call the tcert library to get the batch of tcerts
-	tcertReq := &tcert.GetBatchRequest{
-		Count:          req.Count,
-		Attrs:          attrs,
-		EncryptAttrs:   req.EncryptAttrs,
-		ValidityPeriod: req.ValidityPeriod,
-		PreKey:         prekeyStr,
-	}
-
-	resp, err := ca.tcertMgr.GetBatch(tcertReq, cert)
-	if err != nil {
-		return err
-	}
-
-	// Write the response
-	cfsslapi.SendResponse(w, resp)
-
-	// Success
-	return nil
-
-}
-
-// getUserinfo returns the users requested attribute values and user's affiliation path
-func (h *tcertHandler) getUserInfo(id string, attrNames []string, ca *CA) ([]tcert.Attribute, []string, error) {
-	user, err := ca.registry.GetUser(id, attrNames)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err != nil {
-		log.Fatal("Failed to get RootPreKey")
-		return nil, nil, err
-	}
-	var attrs []tcert.Attribute
-	for _, name := range attrNames {
-		value := user.GetAttribute(name)
-		if value != "" {
-			attrs = append(attrs, tcert.Attribute{Name: name, Value: value})
-		}
-	}
-	return attrs, user.GetAffiliationPath(), nil
-}
-
-// Get the X509 certificate from the authorization header of the request
-func getCertFromAuthHdr(r *http.Request) (*x509.Certificate, error) {
-	authHdr := r.Header.Get("authorization")
-	if authHdr == "" {
-		return nil, errNoAuthHdr
-	}
-	cert, _, _, err := util.DecodeToken(authHdr)
+	tcertReq := &tcert.GetTCertBatchRequest{}
+	tcertReq.Count = req.Count
+	tcertReq.Attrs = attrs
+	tcertReq.EncryptAttrs = req.EncryptAttrs
+	tcertReq.ValidityPeriod = req.ValidityPeriod
+	tcertReq.PreKey = prekeyStr
+	resp, err := ca.tcertMgr.GetBatch(tcertReq, ctx.GetECert())
 	if err != nil {
 		return nil, err
 	}
-	return cert, nil
+	// Successful response
+	return resp, nil
 }
 
 // genRootKey generates a new root key
@@ -153,7 +90,7 @@ func genRootKey(csp bccsp.BCCSP) (bccsp.Key, error) {
 	if IsGMConfig() {
 		opts = &bccsp.GMSM2KeyGenOpts{Temporary: true}
 	} else {
-		opts = &bccsp.ECDSAKeyGenOpts{Temporary: true}
+		opts = &bccsp.AES256KeyGenOpts{Temporary: true}
 	}
 	return csp.KeyGen(opts)
 }

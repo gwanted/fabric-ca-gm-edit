@@ -24,8 +24,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/pkg/errors"
+
+	"reflect"
+
+	"github.com/cloudflare/cfssl/csr"
 	"github.com/cloudflare/cfssl/log"
-	"github.com/spf13/viper"
 	"github.com/tjfoc/fabric-ca-gm/api"
 	"github.com/tjfoc/fabric-ca-gm/lib"
 	"github.com/tjfoc/fabric-ca-gm/util"
@@ -87,7 +91,7 @@ url: <<<URL>>>
 # Membership Service Provider (MSP) directory
 # This is useful when the client is used to enroll a peer or orderer, so
 # that the enrollment artifacts are stored in the format expected by MSP.
-mspdir:
+mspdir: <<<MSPDIR>>>
 
 #############################################################################
 #    TLS section for secure socket connection
@@ -107,29 +111,38 @@ tls:
     keyfile:
 
 #############################################################################
-#  Certificate Signing Request section for generating the CSR for
-#  an enrollment certificate (ECert)
+#  Certificate Signing Request section for generating the CSR for an
+#  enrollment certificate (ECert)
 #
 #  cn - Used by CAs to determine which domain the certificate is to be generated for
+#
+#  serialnumber - The serialnumber field, if specified, becomes part of the issued
+#     certificate's DN (Distinguished Name).  For example, one use case for this is
+#     a company with its own CA (Certificate Authority) which issues certificates
+#     to its employees and wants to include the employee's serial number in the DN
+#     of its issued certificates.
+#     WARNING: The serialnumber field should not be confused with the certificate's
+#     serial number which is set by the CA but is not a component of the
+#     certificate's DN.
+#
 #  names -  A list of name objects. Each name object should contain at least one
-#  "C", "L", "O", "OU", or "ST" value (or any combination of these). These values are:
-#      "C": country
-#      "L": locality or municipality (such as city or town name)
-#      "O": organisation
-#      "OU": organisational unit, such as the department responsible for owning the key;
-#      it can also be used for a "Doing Business As" (DBS) name
-#      "ST": the state or province
-#  hosts - A list of space-separated host names which the certificate should be valid for
+#    "C", "L", "O", or "ST" value (or any combination of these) where these
+#    are abbreviations for the following:
+#        "C": country
+#        "L": locality or municipality (such as city or town name)
+#        "O": organization
+#        "OU": organizational unit, such as the department responsible for owning the key;
+#         it can also be used for a "Doing Business As" (DBS) name
+#        "ST": the state or province
 #
-#  NOTE: The serialnumber field below, if specified, becomes part of the issued
-#  certificate's DN (Distinquished Name).  For example, one use case for this is
-#  a company with its own CA (Certificate Authority) which issues certificates
-#  to its employees and wants to include the employee's serial number in the DN
-#  of its issued certificates.
+#    Note that the "OU" or organizational units of an ECert are always set according
+#    to the values of the identities type and affiliation. OUs are calculated for an enroll
+#    as OU=<type>, OU=<affiliationRoot>, ..., OU=<affiliationLeaf>. For example, an identity
+#    of type "client" with an affiliation of "org1.dept2.team3" would have the following
+#    organizational units: OU=client, OU=org1, OU=dept2, OU=team3
 #
-#  WARNING: This serialnumber field should not be confused with the certificate's
-#  serial number which is set by the CA but is not a component of the
-#  certificate's DN.
+#  hosts - A list of host names for which the certificate should be valid
+#
 #############################################################################
 csr:
   cn: <<<ENROLLMENT_ID>>>
@@ -142,10 +155,6 @@ csr:
       OU: Fabric
   hosts:
     - <<<MYHOST>>>
-  ca:
-    pathlen:
-    pathlenzero:
-    expiry:
 
 #############################################################################
 #  Registration section used to register a new identity with fabric-ca server
@@ -154,17 +163,18 @@ csr:
 #  type - Type of identity being registered (e.g. 'peer, app, user')
 #  affiliation - The identity's affiliation
 #  maxenrollments - The maximum number of times the secret can be reused to enroll.
-#                   Specially, -1 means unlimited; 0 means disabled
+#                   Specially, -1 means unlimited; 0 means to use CA's max enrollment
+#                   value.
 #  attributes - List of name/value pairs of attribute for identity
 #############################################################################
 id:
   name:
   type:
   affiliation:
-  maxenrollments: -1
+  maxenrollments: 0
   attributes:
-    - name:
-      value:
+   # - name:
+   #   value:
 
 #############################################################################
 #  Enrollment section used to enroll an identity with fabric-ca server
@@ -196,173 +206,227 @@ bccsp:
 `
 )
 
-var (
-	// cfgFileName is the name of the client's config file
-	cfgFileName string
-
-	// cfgAttrs are the attributes specified via flags or env variables
-	// and translated to Attributes field in registration
-	cfgAttrs []string
-
-	// clientCfg is the client's config
-	clientCfg *lib.ClientConfig
-)
-
-func configInit(command string) error {
+func (c *ClientCmd) configInit() error {
 	var err error
 
-	cmd := NewCommand(command)
-
-	if cfgFileName != "" {
-		log.Infof("User provided config file: %s\n", cfgFileName)
+	if c.debug {
+		log.Level = log.LevelDebug
 	}
 
-	// Make the config file name absolute
-	if !filepath.IsAbs(cfgFileName) {
-		cfgFileName, err = filepath.Abs(cfgFileName)
-		if err != nil {
-			return fmt.Errorf("Failed to get full path of config file: %s", err)
-		}
+	c.cfgFileName, c.homeDirectory, err = util.ValidateAndReturnAbsConf(c.cfgFileName, c.homeDirectory, cmdName)
+	if err != nil {
+		return err
 	}
 
-	// Commands other than 'enroll' and 'getcacert' require that client already
-	// be enrolled
-	if cmd.requiresEnrollment() {
-		err = checkForEnrollment()
-		if err != nil {
-			return err
-		}
-	}
+	log.Debugf("Home directory: %s", c.homeDirectory)
+
+	// Set configuration file name for viper and configure it read env variables
+	c.myViper.SetConfigFile(c.cfgFileName)
+	c.myViper.AutomaticEnv() // read in environment variables that match
 
 	// If the config file doesn't exist, create a default one if enroll
 	// command being executed. Enroll should be the first command to be
 	// executed, and furthermore the default configuration file requires
 	// enrollment ID to populate CN field which is something the enroll
 	// command requires
-	if cmd.shouldCreateDefaultConfig() {
-		if !util.FileExists(cfgFileName) {
-			err = createDefaultConfigFile()
+	if c.shouldCreateDefaultConfig() {
+		if !util.FileExists(c.cfgFileName) {
+			err = c.createDefaultConfigFile()
 			if err != nil {
-				return fmt.Errorf("Failed to create default configuration file: %s", err)
+				return errors.WithMessage(err, "Failed to create default configuration file")
 			}
-			log.Infof("Created a default configuration file at %s", cfgFileName)
+			log.Infof("Created a default configuration file at %s", c.cfgFileName)
 		}
 	} else {
-		log.Infof("Configuration file location: %s", cfgFileName)
+		log.Infof("Configuration file location: %s", c.cfgFileName)
 	}
 
 	// Call viper to read the config
-	viper.SetConfigFile(cfgFileName)
-	viper.AutomaticEnv() // read in environment variables that match
-	if util.FileExists(cfgFileName) {
-		err = viper.ReadInConfig()
+	if util.FileExists(c.cfgFileName) {
+		err = c.myViper.ReadInConfig()
 		if err != nil {
-			return fmt.Errorf("Failed to read config file: %s", err)
+			return errors.Wrapf(err, "Failed to read config file at '%s'", c.cfgFileName)
 		}
 	}
 
-	// Unmarshal the config into 'clientCfg'
-	// When viper bug https://github.com/spf13/viper/issues/327 is fixed
-	// and vendored, the work around code can be deleted.
-	viperIssue327WorkAround := true
-	if viperIssue327WorkAround {
-		sliceFields := []string{
-			"csr.hosts",
-			"tls.certfiles",
-		}
-		err = util.ViperUnmarshal(clientCfg, sliceFields, viper.GetViper())
-		if err != nil {
-			return fmt.Errorf("Incorrect format in file '%s': %s", cfgFileName, err)
-		}
-	} else {
-		err = viper.Unmarshal(clientCfg)
-		if err != nil {
-			return fmt.Errorf("Incorrect format in file '%s': %s", cfgFileName, err)
-		}
+	err = c.myViper.Unmarshal(c.clientCfg)
+	if err != nil {
+		return errors.Wrapf(err, "Incorrect format in file '%s'", c.cfgFileName)
 	}
 
-	purl, err := url.Parse(clientCfg.URL)
+	purl, err := url.Parse(c.clientCfg.URL)
 	if err != nil {
 		return err
 	}
 
-	clientCfg.TLS.Enabled = purl.Scheme == "https"
+	c.clientCfg.TLS.Enabled = purl.Scheme == "https"
 
-	err = processAttributes()
+	err = processAttributes(c.cfgAttrs, c.clientCfg)
+	if err != nil {
+		return err
+	}
+
+	err = processAttributeRequests(c.cfgAttrReqs, c.clientCfg)
+	if err != nil {
+		return err
+	}
+
+	err = c.processCsrNames()
 	if err != nil {
 		return err
 	}
 
 	// Check for separaters and insert values back into slice
-	normalizeStringSlices()
+	normalizeStringSlices(c.clientCfg)
+
+	// Commands other than 'enroll' and 'getcacert' require that client already
+	// be enrolled
+	if c.requiresEnrollment() {
+		err = checkForEnrollment(c.cfgFileName, c.clientCfg)
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
-func createDefaultConfigFile() error {
+func (c *ClientCmd) createDefaultConfigFile() error {
 	// Create a default config, if URL provided via CLI or envar update config files
 	var cfg string
-	fabricCAServerURL := viper.GetString("url")
+	fabricCAServerURL := c.myViper.GetString("url")
 	if fabricCAServerURL == "" {
 		fabricCAServerURL = util.GetServerURL()
 	} else {
 		URL, err := url.Parse(fabricCAServerURL)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "Failed to parse URL '%s'", fabricCAServerURL)
 		}
 		fabricCAServerURL = fmt.Sprintf("%s://%s", URL.Scheme, URL.Host)
 	}
 
-	myhost := viper.GetString("myhost")
+	myhost := c.myViper.GetString("myhost")
 
 	// Do string subtitution to get the default config
 	cfg = strings.Replace(defaultCfgTemplate, "<<<URL>>>", fabricCAServerURL, 1)
 	cfg = strings.Replace(cfg, "<<<MYHOST>>>", myhost, 1)
-	user, _, err := util.GetUser()
-	if err != nil {
-		return err
+	cfg = strings.Replace(cfg, "<<<MSPDIR>>>", c.clientCfg.MSPDir, 1)
+
+	user := ""
+	var err error
+	if c.requiresUser() {
+		user, _, err = util.GetUser(c.myViper)
+		if err != nil {
+			return err
+		}
 	}
 	cfg = strings.Replace(cfg, "<<<ENROLLMENT_ID>>>", user, 1)
 
 	// Create the directory if necessary
-	cfgDir := filepath.Dir(cfgFileName)
-	err = os.MkdirAll(cfgDir, 0755)
+	err = os.MkdirAll(c.homeDirectory, 0755)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "Failed to create directory at '%s'", c.homeDirectory)
 	}
+
 	// Now write the file
-	return ioutil.WriteFile(cfgFileName, []byte(cfg), 0755)
+	return ioutil.WriteFile(c.cfgFileName, []byte(cfg), 0755)
 }
 
 // processAttributes parses attributes from command line or env variable
-func processAttributes() error {
+func processAttributes(cfgAttrs []string, cfg *lib.ClientConfig) error {
 	if cfgAttrs != nil {
-		clientCfg.ID.Attributes = make([]api.Attribute, len(cfgAttrs))
+		cfg.ID.Attributes = make([]api.Attribute, len(cfgAttrs))
 		for idx, attr := range cfgAttrs {
-			sattr := strings.SplitN(attr, "=", 2)
-			if len(sattr) != 2 {
-				return fmt.Errorf("Attribute '%s' is missing '=' ; it must be of the form <name>=<value>", attr)
+			sattr := strings.Split(attr, ":")
+			if len(sattr) > 2 {
+				return fmt.Errorf("Multiple ':' characters not allowed in attribute specification; error at '%s'", attr)
 			}
-			clientCfg.ID.Attributes[idx].Name = sattr[0]
-			clientCfg.ID.Attributes[idx].Value = sattr[1]
+			attrFlag := ""
+			if len(sattr) > 1 {
+				attrFlag = sattr[1]
+			}
+			sattr = strings.SplitN(sattr[0], "=", 2)
+			if len(sattr) != 2 {
+				return errors.Errorf("Attribute '%s' is missing '=' ; it must be of the form <name>=<value>", attr)
+			}
+			ecert := false
+			switch strings.ToLower(attrFlag) {
+			case "":
+			case "ecert":
+				ecert = true
+			default:
+				return fmt.Errorf("Invalid attribute flag: '%s'", attrFlag)
+			}
+			cfg.ID.Attributes[idx].Name = sattr[0]
+			cfg.ID.Attributes[idx].Value = sattr[1]
+			cfg.ID.Attributes[idx].ECert = ecert
 		}
 	}
 	return nil
 }
 
-func checkForEnrollment() error {
+// processAttributeRequests parses attribute requests from command line or env variable
+// Each string is of the form: <attrName>[:opt] where "opt" means the attribute is
+// optional and will not return an error if the identity does not possess the attribute.
+// The default is that each attribute name listed is required and so the identity must
+// possess the attribute.
+func processAttributeRequests(cfgAttrReqs []string, cfg *lib.ClientConfig) error {
+	if len(cfgAttrReqs) == 0 {
+		return nil
+	}
+	reqs := make([]*api.AttributeRequest, len(cfgAttrReqs))
+	for idx, req := range cfgAttrReqs {
+		sreq := strings.Split(req, ":")
+		name := sreq[0]
+		switch len(sreq) {
+		case 1:
+			reqs[idx] = &api.AttributeRequest{Name: name}
+		case 2:
+			if sreq[1] != "opt" {
+				return errors.Errorf("Invalid option in attribute request specification at '%s'; the value after the colon must be 'opt'", req)
+			}
+			reqs[idx] = &api.AttributeRequest{Name: name, Optional: true}
+		default:
+			return errors.Errorf("Multiple ':' characters not allowed in attribute request specification; error at '%s'", req)
+		}
+	}
+	cfg.Enrollment.AttrReqs = reqs
+	return nil
+}
+
+// processAttributes parses attributes from command line or env variable
+func (c *ClientCmd) processCsrNames() error {
+	if c.cfgCsrNames != nil {
+		c.clientCfg.CSR.Names = make([]csr.Name, len(c.cfgCsrNames))
+		for idx, name := range c.cfgCsrNames {
+			sname := strings.SplitN(name, "=", 2)
+			if len(sname) != 2 {
+				return errors.Errorf("CSR name/value '%s' is missing '=' ; it must be of the form <name>=<value>", name)
+			}
+			v := reflect.ValueOf(&c.clientCfg.CSR.Names[idx]).Elem().FieldByName(sname[0])
+			if v.IsValid() {
+				v.SetString(sname[1])
+			} else {
+				return errors.Errorf("Invalid CSR name: '%s'", sname[0])
+			}
+		}
+	}
+	return nil
+}
+
+func checkForEnrollment(cfgFileName string, cfg *lib.ClientConfig) error {
 	log.Debug("Checking for enrollment")
 	client := lib.Client{
 		HomeDir: filepath.Dir(cfgFileName),
-		Config:  clientCfg,
+		Config:  cfg,
 	}
 	return client.CheckEnrollment()
 }
 
-func normalizeStringSlices() {
+func normalizeStringSlices(cfg *lib.ClientConfig) {
 	fields := []*[]string{
-		&clientCfg.CSR.Hosts,
-		&clientCfg.TLS.CertFiles,
+		&cfg.CSR.Hosts,
+		&cfg.TLS.CertFiles,
 	}
 	for _, namePtr := range fields {
 		norm := util.NormalizeStringSlice(*namePtr)

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +29,7 @@ import (
 
 	"math/big"
 
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/factory"
+	"github.com/hyperledger/fabric/bccsp/factory"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -128,6 +129,28 @@ func TestGetX509CertFromPem(t *testing.T) {
 		t.Fatalf("GetX509CertificateFromPEM should have failed as bytes passed was not in correct format")
 	}
 
+func TestGetX509CertsFromPem(t *testing.T) {
+	certBuffer, error := ioutil.ReadFile(getPath("ec.pem"))
+	if error != nil {
+		t.Fatalf("Certificate File Read from file failed with error : %s", error)
+	}
+	certificates, err := GetX509CertificatesFromPEM(certBuffer)
+	assert.NoError(t, err, "GetX509CertificatesFromPEM failed")
+	assert.NotNil(t, certificates)
+	assert.Equal(t, 1, len(certificates), "GetX509CertificatesFromPEM should have returned 1 certificate")
+
+	skiBuffer, skiError := ioutil.ReadFile(getPath("ec-key.ski"))
+	if skiError != nil {
+		t.Fatalf("SKI File read failed with error : %s", skiError)
+	}
+
+	certificates, err = GetX509CertificatesFromPEM(skiBuffer)
+	if err == nil {
+		t.Fatal("GetX509CertificatesFromPEM should have failed as bytes passed was not in correct format")
+	}
+	if certificates != nil {
+		t.Fatalf("GetX509CertificatesFromPEM should have failed as bytes passed was not in correct format")
+	}
 }
 
 // This test case has been removed temporarily
@@ -493,11 +516,15 @@ func TestStructToString(t *testing.T) {
 					Name: "foo",
 					Pass: "foopwd",
 					Addr: "user",
+					URL:  "http://foo:foopwd@localhost:7054",
+					ID:   2,
 				},
 				configID{
 					Name: "bar",
 					Pass: "barpwd",
 					Addr: "user",
+					URL:  "ldap://foo:foopwd@localhost:7054",
+					ID:   3,
 				},
 			},
 		},
@@ -686,5 +713,76 @@ func testIsSubsetOf(t *testing.T, small, large string, expectToPass bool) {
 		if err == nil {
 			t.Errorf("IsSubsetOf('%s','%s') expected error but passed", small, large)
 		}
+	}
+}
+
+func TestHostname(t *testing.T) {
+	host := Hostname()
+	assert.NotEqual(t, "", host, "Hostname should not be empty")
+}
+
+func TestHTTPRequestToString(t *testing.T) {
+	url := "http://localhost:7054"
+	reqBody := "Hello"
+	req, err := http.NewRequest("POST", url, strings.NewReader(reqBody))
+	if err != nil {
+		t.Errorf("Failed to create a request: %s", err)
+	} else {
+		reqStr := HTTPRequestToString(req)
+		assert.Contains(t, reqStr, url)
+		assert.Contains(t, reqStr, "POST")
+		assert.Contains(t, reqStr, reqBody)
+	}
+}
+
+func TestValidateAndReturnAbsConf(t *testing.T) {
+	var err error
+	var filename, homeDir string
+
+	filename, _, err = ValidateAndReturnAbsConf("/tmp/test.yaml", "/tmp/homeDir", "fabric-ca-client")
+	assert.NoError(t, err, "Should not have errored out, this is a valid configuration")
+
+	if filename != "/tmp/test.yaml" {
+		t.Error("Failed to get correct path for configuration file")
+	}
+
+	filename, homeDir, err = ValidateAndReturnAbsConf("", "../testdata/tmp", "fabric-ca-client")
+	assert.NoError(t, err, "Should not have errored out, this is a valid configuration")
+
+	homeDirAbs, err := filepath.Abs("../testdata/tmp")
+	if err != nil {
+		t.Fatal("Error occured getting absolute path: ", err)
+	}
+
+	if homeDir != homeDirAbs {
+		t.Error("Failed to get correct path for home directory")
+	}
+
+	if filename != filepath.Join(homeDirAbs, "fabric-ca-client-config.yaml") {
+		t.Error("Failed to get correct path for configuration file")
+	}
+
+	// Test with no home directory set
+	filename, _, err = ValidateAndReturnAbsConf("/tmp/test.yaml", "", "fabric-ca-client")
+	assert.NoError(t, err, "Should not have errored out, this is a valid configuration")
+
+	if filename != "/tmp/test.yaml" {
+		t.Error("Failed to get correct path for configuration file")
+	}
+
+	filename, homeDir, err = ValidateAndReturnAbsConf("../testdata/tmp/test.yaml", "", "fabric-ca-client")
+	assert.NoError(t, err, "Should not have errored out, this is a valid configuration")
+
+	homeDirAbs, err = filepath.Abs("../testdata/tmp")
+	if err != nil {
+		t.Fatal("Error occured getting absolute path: ", err)
+	}
+
+	if homeDir != homeDirAbs {
+		t.Error("Failed to get correct path for home directory")
+	}
+
+	if filename != filepath.Join(homeDirAbs, "test.yaml") {
+		t.Error("Failed to get correct path for configuration file")
 	}
 }

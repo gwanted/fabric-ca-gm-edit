@@ -53,7 +53,6 @@ import (
 	"errors"
 
 	cferr "github.com/cloudflare/cfssl/errors"
-	"github.com/cloudflare/cfssl/log"
 )
 
 // Types used for asn1 Unmarshaling.
@@ -134,14 +133,12 @@ func ParsePKCS7(raw []byte) (msg *PKCS7, err error) {
 	var pkcs7 initPKCS7
 	_, err = asn1.Unmarshal(raw, &pkcs7)
 	if err != nil {
-		log.Debugf("holy shit %s \n rows %v \n pkcs7 %v", err.Error(), raw, pkcs7)
 		return nil, cferr.Wrap(cferr.CertificateError, cferr.ParseFailed, err)
 	}
 
 	msg = new(PKCS7)
 	msg.Raw = pkcs7.Raw
 	msg.ContentInfo = pkcs7.ContentType.String()
-	log.Debugf("pkcs7 data content %v", msg.ContentInfo)
 	switch {
 	case msg.ContentInfo == ObjIDData:
 		msg.ContentInfo = "Data"

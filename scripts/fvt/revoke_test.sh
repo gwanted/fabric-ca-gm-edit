@@ -5,7 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-FABRIC_CA="$GOPATH/src/github.com/tjfoc/gmca"
+FABRIC_CA="$GOPATH/src/github.com/hyperledger/fabric-ca"
 SCRIPTDIR="$FABRIC_CA/scripts/fvt"
 TESTDATA="$FABRIC_CA/testdata"
 export CA_CFG_PATH="/tmp/revoke_test"
@@ -25,7 +25,7 @@ URI="${PROTO}user:pass@localhost:$PROXY_PORT"
 genAffYaml() {
    local Planet=(0 1)
    local Landmass=(0)
-   local Country=(0 1) 
+   local Country=(0 1)
    local Province=(0 1 2)
    local Locale=(0)
    local City=(0 1)
@@ -68,29 +68,6 @@ genAffYaml() {
    indent="${indent}  "
 }
 
-function testStatus() {
-   local user="$1"
-   local driver="$2"
-   : ${driver:="sqlite3"}
-   case $driver in
-      sqlite3)
-         user_status=$(sqlite3 $CA_CFG_PATH/$DB "SELECT * FROM users WHERE (id=\"$user\");")
-         cert_status=$(sqlite3 $CA_CFG_PATH/$DB "SELECT * FROM certificates WHERE (id=\"$user\");")
-         user_status_code=$(echo $user_status | awk -F'|' '{print $6}')
-         cert_status_code=$(echo $cert_status | awk -F'|' '{print $5}')
-      ;;
-      mysql)
-         user_status_code=$(mysql --host=localhost --user=root --password=mysql -e "SELECT * FROM users WHERE (id=\"$user\");" $DB| awk -F'\t' -v u=$user '$1~u {print $6}')
-         cert_status_code=$(mysql --host=localhost --user=root --password=mysql -e "SELECT * FROM certificates WHERE (id=\"$user\");" $DB| awk -F'\t' -v u=$user '$1~u {print $5}')
-      ;;
-      postgres)
-         user_status_code=$(/usr/bin/psql -U postgres -h localhost -c "SELECT id,state FROM users WHERE id='$user';" --dbname=fabric_ca | awk -v u=$user -F'|' '$1~u {gsub(/ /,"");print $2}')
-         cert_status_code=$(/usr/bin/psql -U postgres -h localhost -c "SELECT id,encode(status,'escape') FROM certificates WHERE id='$user';" --dbname=fabric_ca | awk -v u=$user -F'|' '$1~u {gsub(/ /,"");print $2}')
-      ;;
-    esac
-    echo "$user_status_code $cert_status_code"
-}
-
 # Expected codes
             # user  cert
 enrolledGood="1 good"
@@ -101,7 +78,7 @@ TEST_RESULTS=("$revokedRevoked" "$revokedRevoked" "$enrolledRevoked" "$enrolledR
 cd $TESTDATA
 python -m SimpleHTTPServer $HTTP_PORT &
 HTTP_PID=$!
-pollServer python localhost "$HTTP_PORT" || ErrorExit "Failed to start HTTP server" RC
+pollSimpleHttp
 echo $HTTP_PID
 trap "kill $HTTP_PID; CleanUp; exit 1" INT
 
@@ -118,7 +95,7 @@ for driver in mysql postgres sqlite3; do
    # Setup CA server
    $SCRIPTDIR/fabric-ca_setup.sh -D -I -d $driver
    genAffYaml >> $CA_CFG_PATH/runFabricCaFvt.yaml
-   $SCRIPTDIR/fabric-ca_setup.sh -o 60 -D -S -X -d $driver -x $CA_CFG_PATH
+   $SCRIPTDIR/fabric-ca_setup.sh -D -S -X -d $driver -x $CA_CFG_PATH
    if test "$?" -ne 0; then
       kill $HTTP_PID
       wait $HTTP_PID

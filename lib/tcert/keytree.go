@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
+	"github.com/hyperledger/fabric/bccsp"
 )
 
 /*

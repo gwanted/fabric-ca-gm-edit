@@ -21,6 +21,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/pkg/errors"
 
 	"github.com/cloudflare/cfssl/log"
 	"github.com/mitchellh/mapstructure"
@@ -52,14 +55,16 @@ const (
 // "opt" - the optional one character short name to use on the command line;
 // "help" - the help message to display on the command line;
 // "skip" - to skip the field.
-func RegisterFlags(flags *pflag.FlagSet, config interface{}, tags map[string]string) error {
-	fr := &flagRegistrar{flags: flags, tags: tags}
+func RegisterFlags(v *viper.Viper, flags *pflag.FlagSet, config interface{},
+	tags map[string]string) error {
+	fr := &flagRegistrar{flags: flags, tags: tags, viper: v}
 	return ParseObj(config, fr.Register)
 }
 
 type flagRegistrar struct {
 	flags *pflag.FlagSet
 	tags  map[string]string
+	viper *viper.Viper
 }
 
 func (fr *flagRegistrar) Register(f *Field) (err error) {
@@ -69,49 +74,75 @@ func (fr *flagRegistrar) Register(f *Field) (err error) {
 	}
 	// Don't register fields with no address
 	if f.Addr == nil {
-		return fmt.Errorf("Field is not addressable: %s", f.Path)
+		return errors.Errorf("Field is not addressable: %s", f.Path)
 	}
 	skip := fr.getTag(f, TagSkip)
 	if skip != "" {
 		return nil
 	}
+
 	help := fr.getTag(f, TagHelp)
 	opt := fr.getTag(f, TagOpt)
 	def := fr.getTag(f, TagDefault)
 	switch f.Kind {
+
 	case reflect.String:
 		if help == "" {
-			return fmt.Errorf("Field is missing a help tag: %s", f.Path)
+			return errors.Errorf("Field is missing a help tag: %s", f.Path)
 		}
 		fr.flags.StringVarP(f.Addr.(*string), f.Path, opt, def, help)
 	case reflect.Int:
 		if help == "" {
-			return fmt.Errorf("Field is missing a help tag: %s", f.Path)
+			return errors.Errorf("Field is missing a help tag: %s", f.Path)
 		}
 		var intDef int
 		if def != "" {
 			intDef, err = strconv.Atoi(def)
 			if err != nil {
-				return fmt.Errorf("Invalid integer value in 'def' tag of %s field", f.Path)
+				return errors.Errorf("Invalid integer value in 'def' tag of %s field", f.Path)
 			}
 		}
 		fr.flags.IntVarP(f.Addr.(*int), f.Path, opt, intDef, help)
+	case reflect.Int64:
+		if help == "" {
+			return errors.Errorf("Field is missing a help tag: %s", f.Path)
+		}
+		d, ok := f.Addr.(*time.Duration)
+		if !ok {
+			var intDef int64
+			if def != "" {
+				intDef, err = strconv.ParseInt(def, 10, 64)
+				if err != nil {
+					return errors.Errorf("Invalid int64 value in 'def' tag of %s field", f.Path)
+				}
+			}
+			fr.flags.Int64VarP(f.Addr.(*int64), f.Path, opt, intDef, help)
+		} else {
+			var intDef time.Duration
+			if def != "" {
+				intDef, err = time.ParseDuration(def)
+				if err != nil {
+					return errors.Errorf("Invalid duration value in 'def' tag of %s field", f.Path)
+				}
+			}
+			fr.flags.DurationVarP(d, f.Path, opt, intDef, help)
+		}
 	case reflect.Bool:
 		if help == "" {
-			return fmt.Errorf("Field is missing a help tag: %s", f.Path)
+			return errors.Errorf("Field is missing a help tag: %s", f.Path)
 		}
 		var boolDef bool
 		if def != "" {
 			boolDef, err = strconv.ParseBool(def)
 			if err != nil {
-				return fmt.Errorf("Invalid boolean value in 'def' tag of %s field", f.Path)
+				return errors.Errorf("Invalid boolean value in 'def' tag of %s field", f.Path)
 			}
 		}
 		fr.flags.BoolVarP(f.Addr.(*bool), f.Path, opt, boolDef, help)
 	case reflect.Slice:
 		if f.Type.Elem().Kind() == reflect.String {
 			if help == "" {
-				return fmt.Errorf("Field is missing a help tag: %s", f.Path)
+				return errors.Errorf("Field is missing a help tag: %s", f.Path)
 			}
 			fr.flags.StringSliceVarP(f.Addr.(*[]string), f.Path, opt, nil, help)
 		} else {
@@ -122,7 +153,7 @@ func (fr *flagRegistrar) Register(f *Field) (err error) {
 			f.Path, f.Kind)
 		return nil
 	}
-	bindFlag(fr.flags, f.Path)
+	bindFlag(fr.viper, fr.flags, f.Path)
 	return nil
 }
 
@@ -139,9 +170,9 @@ func (fr *flagRegistrar) getTag(f *Field, tagName string) string {
 }
 
 // CmdRunBegin is called at the beginning of each cobra run function
-func CmdRunBegin() {
+func CmdRunBegin(v *viper.Viper) {
 	// If -d or --debug, set debug logging level
-	if viper.GetBool("debug") {
+	if v.GetBool("debug") {
 		log.Level = log.LevelDebug
 
 		logging.SetLevel(logging.INFO, "bccsp")
@@ -151,18 +182,18 @@ func CmdRunBegin() {
 }
 
 // FlagString sets up a flag for a string, binding it to its name
-func FlagString(flags *pflag.FlagSet, name, short string, def string, desc string) {
+func FlagString(v *viper.Viper, flags *pflag.FlagSet, name, short string, def string, desc string) {
 	flags.StringP(name, short, def, desc)
-	bindFlag(flags, name)
+	bindFlag(v, flags, name)
 }
 
 // common binding function
-func bindFlag(flags *pflag.FlagSet, name string) {
+func bindFlag(v *viper.Viper, flags *pflag.FlagSet, name string) {
 	flag := flags.Lookup(name)
 	if flag == nil {
 		panic(fmt.Errorf("failed to lookup '%s'", name))
 	}
-	viper.BindPFlag(name, flag)
+	v.BindPFlag(name, flag)
 }
 
 // ViperUnmarshal is a work around for a bug in viper.Unmarshal
@@ -177,7 +208,7 @@ func ViperUnmarshal(cfg interface{}, stringSliceFields []string, vp *viper.Viper
 	}
 	decoder, err := mapstructure.NewDecoder(decoderConfig)
 	if err != nil {
-		return fmt.Errorf("Failed to create decoder: %s", err)
+		return errors.Wrap(err, "Failed to create decoder")
 	}
 	settings := vp.AllSettings()
 	for _, field := range stringSliceFields {

@@ -19,15 +19,18 @@ package lib
 import (
 	"fmt"
 	"net/url"
+	"path"
 
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/factory"
+	"github.com/cloudflare/cfssl/log"
 	"github.com/tjfoc/fabric-ca-gm/api"
 	"github.com/tjfoc/fabric-ca-gm/lib/tls"
+	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/pkg/errors"
 )
 
 // ClientConfig is the fabric-ca client's config
 type ClientConfig struct {
-	Debug      bool   `def:"false" opt:"d" help:"Enable debug level logging"`
 	URL        string `def:"http://localhost:7054" opt:"u" help:"URL of fabric-ca-server"`
 	MSPDir     string `def:"msp" opt:"M" help:"Membership Service Provider directory"`
 	TLS        tls.ClientTLSConfig
@@ -59,7 +62,7 @@ func (c *ClientConfig) Enroll(rawurl, home string) (*EnrollmentResponse, error) 
 		expecting := fmt.Sprintf(
 			"%s://<enrollmentID>:<secret>@%s",
 			purl.Scheme, purl.Host)
-		return nil, fmt.Errorf(
+		return nil, errors.Errorf(
 			"The URL of the fabric CA server is missing the enrollment ID and secret;"+
 				" found '%s' but expecting '%s'", rawurl, expecting)
 	}
@@ -69,4 +72,33 @@ func (c *ClientConfig) Enroll(rawurl, home string) (*EnrollmentResponse, error) 
 	c.Enrollment.CSR = &c.CSR
 	client := &Client{HomeDir: home, Config: c}
 	return client.Enroll(&c.Enrollment)
+}
+
+// GenCSR generates a certificate signing request and writes the CSR to a file.
+func (c *ClientConfig) GenCSR(home string) error {
+
+	client := &Client{HomeDir: home, Config: c}
+	// Generate the CSR
+
+	err := client.Init()
+	if err != nil {
+		return err
+	}
+
+	if c.CSR.CN == "" {
+		return errors.Errorf("CSR common name not specified; use '--csr.cn' flag")
+	}
+
+	csrPEM, _, err := client.GenCSR(&c.CSR, c.CSR.CN)
+	if err != nil {
+		return err
+	}
+
+	csrFile := path.Join(client.Config.MSPDir, "signcerts", fmt.Sprintf("%s.csr", c.CSR.CN))
+	err = util.WriteFile(csrFile, csrPEM, 0644)
+	if err != nil {
+		return errors.WithMessage(err, "Failed to store the CSR")
+	}
+	log.Infof("Stored CSR at %s", csrFile)
+	return nil
 }

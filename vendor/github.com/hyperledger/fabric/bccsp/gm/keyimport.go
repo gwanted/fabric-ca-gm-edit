@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp"
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/utils"
+	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/tjfoc/gmsm/sm2"
 )
 
@@ -117,8 +117,6 @@ func (*ecdsaGoPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bc
 		return nil, errors.New("Invalid raw material. Expected *ecdsa.PublicKey.")
 	}
 
-	fmt.Printf("xxxxxxxxxxxxx  gm keyimport ecdsaGoPublicKeyImportOptsKeyImporter \n")
-
 	return &ecdsaPublicKey{lowLevelKey}, nil
 }
 
@@ -173,7 +171,6 @@ func (*ecdsaPKIXPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts 
 }
 
 func (ki *x509PublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
-	fmt.Printf("xxxxxxxxxxxxxxxxx in xxx gm 11111111 X509PublicKeyImportOpts   raw   %T\n", raw)
 
 	sm2Cert, ok := raw.(*sm2.Certificate)
 	if !ok {
@@ -181,8 +178,6 @@ func (ki *x509PublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bc
 	}
 
 	pk := sm2Cert.PublicKey
-
-	fmt.Printf("xxxxxxxxxxxxxxxxx in  gm  pk :   %T\n", pk)
 	switch pk.(type) {
 	case sm2.PublicKey:
 		fmt.Printf("bccsp gm keyimport pk is sm2.PublicKey")
@@ -199,13 +194,19 @@ func (ki *x509PublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bc
 			der,
 			&bccsp.GMSM2PublicKeyImportOpts{Temporary: opts.Ephemeral()})
 	case *sm2.PublicKey:
-		fmt.Printf("xxxxxxxxxxxxxxxxxxxxx    bccsp gm keyimport pk is *sm2.PublicKey\n")
+		fmt.Printf("bccsp gm keyimport pk is *sm2.PublicKey")
+		sm2PublickKey, ok := pk.(*sm2.PublicKey)
+		if !ok {
+			return nil, errors.New("Parse interface []  to sm2 pk error")
+		}
+		der, err := sm2.MarshalSm2PublicKey(sm2PublickKey)
+		if err != nil {
+			return nil, errors.New("MarshalSm2PublicKey error")
+		}
 		return ki.bccsp.keyImporters[reflect.TypeOf(&bccsp.GMSM2PublicKeyImportOpts{})].KeyImport(
-			pk,
+			der,
 			&bccsp.GMSM2PublicKeyImportOpts{Temporary: opts.Ephemeral()})
 	case *ecdsa.PublicKey:
-		fmt.Println("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx gm.keyimport.go  *ecdsa.PublicKey")
-
 		return ki.bccsp.keyImporters[reflect.TypeOf(&bccsp.ECDSAGoPublicKeyImportOpts{})].KeyImport(
 			pk,
 			&bccsp.ECDSAGoPublicKeyImportOpts{Temporary: opts.Ephemeral()})
