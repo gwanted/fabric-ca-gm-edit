@@ -29,8 +29,6 @@ import (
 	"strings"
 	_ "time" // for ocspSignerFromConfig
 
-	"github.com/pkg/errors"
-
 	_ "github.com/cloudflare/cfssl/cli" // for ocspSignerFromConfig
 	"github.com/cloudflare/cfssl/config"
 	"github.com/cloudflare/cfssl/csr"
@@ -45,6 +43,7 @@ import (
 	"github.com/hyperledger/fabric/bccsp/factory"
 	cspsigner "github.com/hyperledger/fabric/bccsp/signer"
 	"github.com/hyperledger/fabric/bccsp/utils"
+	"github.com/pkg/errors"
 )
 
 // GetDefaultBCCSP returns the default BCCSP
@@ -141,7 +140,6 @@ func getBCCSPKeyOpts(kr csr.KeyRequest, ephemeral bool) (opts bccsp.KeyGenOpts, 
 		case 256:
 			return &bccsp.ECDSAP256KeyGenOpts{Temporary: ephemeral}, nil
 		case 384:
-
 			return &bccsp.ECDSAP384KeyGenOpts{Temporary: ephemeral}, nil
 		case 521:
 			// Need to add curve P521 to bccsp
@@ -250,9 +248,10 @@ func GetSignerFromSM2Cert(cert *sm2.Certificate, csp bccsp.BCCSP) (bccsp.Key, cr
 
 // GetSignerFromCertFile load skiFile and load private key represented by ski and return bccsp signer that conforms to crypto.Signer
 func GetSignerFromCertFile(certFile string, csp bccsp.BCCSP) (bccsp.Key, crypto.Signer, *x509.Certificate, error) {
+	// Load cert file
 	certBytes, err := ioutil.ReadFile(certFile)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, errors.Wrapf(err, "Could not read certFile '%s'", certFile)
 	}
 	cert, err := helpers.ParseCertificatePEM(certBytes)
 	//var newCert = &x509.Certificate{}

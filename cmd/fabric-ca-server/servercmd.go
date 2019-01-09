@@ -22,9 +22,9 @@ import (
 	"strings"
 
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/lib"
-	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/lib"
+	"github.com/hyperledger/fabric-ca/lib/metadata"
+	"github.com/hyperledger/fabric-ca/util"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -73,7 +73,6 @@ func (s *ServerCmd) Execute() error {
 // It intializes the cobra root and sub commands and
 // registers command flgs with viper
 func (s *ServerCmd) init() {
-	metadata.Version = "1.1.0"
 	// root command
 	rootCmd := &cobra.Command{
 		Use:   cmdName,

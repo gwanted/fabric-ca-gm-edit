@@ -22,13 +22,22 @@ import (
 	"io/ioutil"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/util"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/pkg/errors"
 )
+
+// DefaultCipherSuites is a set of strong TLS cipher suites
+var DefaultCipherSuites = []uint16{
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+}
 
 // ServerTLSConfig defines key material for a TLS server
 type ServerTLSConfig struct {
@@ -86,7 +95,7 @@ func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*tls.Config, err
 	}
 	rootCAPool := x509.NewCertPool()
 	if len(cfg.CertFiles) == 0 {
-		return nil, errors.New("No TLS certificate files were provided")
+		return nil, errors.New("No trusted root certificates for TLS were provided")
 	}
 
 	for _, cacert := range cfg.CertFiles {

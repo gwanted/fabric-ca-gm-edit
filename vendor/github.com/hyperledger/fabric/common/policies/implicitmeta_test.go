@@ -22,7 +22,6 @@ import (
 
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
-
 	"github.com/stretchr/testify/assert"
 )
 
@@ -35,7 +34,7 @@ func (rp acceptPolicy) Evaluate(signedData []*cb.SignedData) error {
 }
 
 func TestImplicitMarshalError(t *testing.T) {
-	_, err := newImplicitMetaPolicy([]byte("GARBAGE"))
+	_, err := newImplicitMetaPolicy([]byte("GARBAGE"), nil)
 	assert.Error(t, err, "Should have errored unmarshaling garbage")
 }
 
@@ -50,9 +49,7 @@ func makeManagers(count, passing int) map[string]*ManagerImpl {
 		remaining--
 
 		result[fmt.Sprintf("%d", i)] = &ManagerImpl{
-			config: &policyConfig{
-				policies: policyMap,
-			},
+			policies: policyMap,
 		}
 	}
 	return result
@@ -63,14 +60,10 @@ func runPolicyTest(rule cb.ImplicitMetaPolicy_Rule, managerCount int, passingCou
 	imp, err := newImplicitMetaPolicy(utils.MarshalOrPanic(&cb.ImplicitMetaPolicy{
 		Rule:      rule,
 		SubPolicy: TestPolicyName,
-	}))
+	}), makeManagers(managerCount, passingCount))
 	if err != nil {
 		panic(err)
 	}
-
-	imp.initialize(&policyConfig{
-		managers: makeManagers(managerCount, passingCount),
-	})
 
 	return imp.Evaluate(nil)
 }

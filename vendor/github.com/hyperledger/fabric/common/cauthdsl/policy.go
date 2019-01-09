@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package cauthdsl
@@ -20,12 +10,54 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/hyperledger/fabric/common/policies"
-	cb "github.com/hyperledger/fabric/protos/common"
-
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
+	cb "github.com/hyperledger/fabric/protos/common"
+	mspp "github.com/hyperledger/fabric/protos/msp"
 )
+
+type Identity interface {
+	// SatisfiesPrincipal checks whether this instance matches
+	// the description supplied in MSPPrincipal. The check may
+	// involve a byte-by-byte comparison (if the principal is
+	// a serialized identity) or may require MSP validation
+	SatisfiesPrincipal(principal *mspp.MSPPrincipal) error
+
+	// GetIdentifier returns the identifier of that identity
+	GetIdentifier() *msp.IdentityIdentifier
+}
+
+type IdentityAndSignature interface {
+	// Identity returns the identity associated to this instance
+	Identity() (Identity, error)
+
+	// Verify returns the validity status of this identity's signature over the message
+	Verify() error
+}
+
+type deserializeAndVerify struct {
+	signedData           *cb.SignedData
+	deserializer         msp.IdentityDeserializer
+	deserializedIdentity msp.Identity
+}
+
+func (d *deserializeAndVerify) Identity() (Identity, error) {
+	deserializedIdentity, err := d.deserializer.DeserializeIdentity(d.signedData.Identity)
+	if err != nil {
+		return nil, err
+	}
+
+	d.deserializedIdentity = deserializedIdentity
+	return deserializedIdentity, nil
+}
+
+func (d *deserializeAndVerify) Verify() error {
+	if d.deserializedIdentity == nil {
+		cauthdslLogger.Panicf("programming error, Identity must be called prior to Verify")
+	}
+	return d.deserializedIdentity.Verify(d.signedData.Data, d.signedData.Signature)
+}
 
 type provider struct {
 	deserializer msp.IdentityDeserializer
@@ -55,13 +87,15 @@ func (pr *provider) NewPolicy(data []byte) (policies.Policy, proto.Message, erro
 	}
 
 	return &policy{
-		evaluator: compiled,
+		evaluator:    compiled,
+		deserializer: pr.deserializer,
 	}, sigPolicy, nil
 
 }
 
 type policy struct {
-	evaluator func([]*cb.SignedData, []bool) bool
+	evaluator    func([]IdentityAndSignature, []bool) bool
+	deserializer msp.IdentityDeserializer
 }
 
 // Evaluate takes a set of SignedData and evaluates whether this set of signatures satisfies the policy
@@ -69,10 +103,17 @@ func (p *policy) Evaluate(signatureSet []*cb.SignedData) error {
 	if p == nil {
 		return fmt.Errorf("No such policy")
 	}
+	idAndS := make([]IdentityAndSignature, len(signatureSet))
+	for i, sd := range signatureSet {
+		idAndS[i] = &deserializeAndVerify{
+			signedData:   sd,
+			deserializer: p.deserializer,
+		}
+	}
 
-	ok := p.evaluator(signatureSet, make([]bool, len(signatureSet)))
+	ok := p.evaluator(deduplicate(idAndS), make([]bool, len(signatureSet)))
 	if !ok {
-		return errors.New("Failed to authenticate policy")
+		return errors.New("signature set did not satisfy policy")
 	}
 	return nil
 }

@@ -1,19 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-Modified create GM sm2Cert options by Tongji Fintech Research Institute on 2017-09-15.
-
+SPDX-License-Identifier: Apache-2.0
 */
 package ca
 
@@ -24,20 +12,30 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"io/ioutil"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/gm"
+	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/hyperledger/fabric/common/tools/cryptogen/csp"
 	"github.com/tjfoc/gmsm/sm2"
 )
 
 type CA struct {
-	Name string
+	Name               string
+	Country            string
+	Province           string
+	Locality           string
+	OrganizationalUnit string
+	StreetAddress      string
+	PostalCode         string
 	//SignKey  *ecdsa.PrivateKey
 	Signer      crypto.Signer
 	SignCert    *x509.Certificate
@@ -47,7 +45,7 @@ type CA struct {
 
 // NewCA creates an instance of CA and saves the signing key pair in
 // baseDir/name
-func NewCA(baseDir, org, name string) (*CA, error) {
+func NewCA(baseDir, org, name, country, province, locality, orgUnit, streetAddress, postalCode string) (*CA, error) {
 
 	var response error
 	var ca *CA
@@ -72,7 +70,7 @@ func NewCA(baseDir, org, name string) (*CA, error) {
 				template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
 
 				//set the organization for the subject
-				subject := subjectTemplate()
+				subject := subjectTemplateAdditional(country, province, locality, orgUnit, streetAddress, postalCode)
 				subject.Organization = []string{org}
 				subject.CommonName = name
 
@@ -90,10 +88,16 @@ func NewCA(baseDir, org, name string) (*CA, error) {
 				if err == nil {
 					ca = &CA{
 						Name: name,
-						//Signer: signer,
-						//SignCert: x509Cert,
-						SignSm2Cert: x509Cert,
-						Sm2Key:      priv,
+						// Signer: signer,
+						// SignCert:           x509Cert,
+						Country:            country,
+						Province:           province,
+						Locality:           locality,
+						OrganizationalUnit: orgUnit,
+						StreetAddress:      streetAddress,
+						PostalCode:         postalCode,
+						SignSm2Cert:        x509Cert,
+						Sm2Key:             priv,
 					}
 				}
 			}
@@ -104,7 +108,7 @@ func NewCA(baseDir, org, name string) (*CA, error) {
 
 // SignCertificate creates a signed certificate based on a built-in template
 // and saves it in baseDir/name
-func (ca *CA) SignCertificate(baseDir, name string, sans []string, pub *sm2.PublicKey,
+func (ca *CA) SignCertificate(baseDir, name string, ous, sans []string, pub *sm2.PublicKey,
 	ku x509.KeyUsage, eku []x509.ExtKeyUsage) (*sm2.Certificate, error) {
 
 	template := x509Template()
@@ -112,13 +116,22 @@ func (ca *CA) SignCertificate(baseDir, name string, sans []string, pub *sm2.Publ
 	template.ExtKeyUsage = eku
 
 	//set the organization for the subject
-	subject := subjectTemplate()
+	subject := subjectTemplateAdditional(ca.Country, ca.Province, ca.Locality, ca.OrganizationalUnit, ca.StreetAddress, ca.PostalCode)
 	subject.CommonName = name
 
-	template.Subject = subject
-	template.DNSNames = sans
-	template.PublicKey = pub
+	subject.OrganizationalUnit = append(subject.OrganizationalUnit, ous...)
 
+	template.Subject = subject
+	for _, san := range sans {
+		// try to parse as an IP address first
+		ip := net.ParseIP(san)
+		if ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+		} else {
+			template.DNSNames = append(template.DNSNames, san)
+		}
+	}
+	template.PublicKey = pub
 	// cert, err := genCertificateECDSA(baseDir, name, &template, ca.SignCert,
 	// 	pub, ca.Signer)
 
@@ -141,26 +154,55 @@ func subjectTemplate() pkix.Name {
 	}
 }
 
+// Additional for X509 subject
+func subjectTemplateAdditional(country, province, locality, orgUnit, streetAddress, postalCode string) pkix.Name {
+	name := subjectTemplate()
+	if len(country) >= 1 {
+		name.Country = []string{country}
+	}
+	if len(province) >= 1 {
+		name.Province = []string{province}
+	}
+
+	if len(locality) >= 1 {
+		name.Locality = []string{locality}
+	}
+	if len(orgUnit) >= 1 {
+		name.OrganizationalUnit = []string{orgUnit}
+	}
+	if len(streetAddress) >= 1 {
+		name.StreetAddress = []string{streetAddress}
+	}
+	if len(postalCode) >= 1 {
+		name.PostalCode = []string{postalCode}
+	}
+	return name
+}
+
 // default template for X509 certificates
 func x509Template() x509.Certificate {
 
-	//generate a serial number
+	// generate a serial number
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, _ := rand.Int(rand.Reader, serialNumberLimit)
 
-	now := time.Now()
+	// set expiry to around 10 years
+	expiry := 3650 * 24 * time.Hour
+	// backdate 5 min
+	notBefore := time.Now().Add(-5 * time.Minute).UTC()
+
 	//basic template to use
 	x509 := x509.Certificate{
 		SerialNumber:          serialNumber,
-		NotBefore:             now,
-		NotAfter:              now.Add(3650 * 24 * time.Hour), //~ten years
+		NotBefore:             notBefore,
+		NotAfter:              notBefore.Add(expiry).UTC(),
 		BasicConstraintsValid: true,
 	}
 	return x509
 
 }
 
-// generate a signed X509 certficate using ECDSA
+// generate a signed X509 certificate using ECDSA
 func genCertificateECDSA(baseDir, name string, template, parent *x509.Certificate, pub *ecdsa.PublicKey,
 	priv interface{}) (*x509.Certificate, error) {
 
@@ -190,10 +232,35 @@ func genCertificateECDSA(baseDir, name string, template, parent *x509.Certificat
 	return x509Cert, nil
 }
 
+// LoadCertificateECDSA load a ecdsa cert from a file in cert path
+func LoadCertificateECDSA(certPath string) (*x509.Certificate, error) {
+	var cert *x509.Certificate
+	var err error
+
+	walkFunc := func(path string, info os.FileInfo, err error) error {
+		if strings.HasSuffix(path, ".pem") {
+			rawCert, err := ioutil.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			block, _ := pem.Decode(rawCert)
+			cert, err = utils.DERToX509Certificate(block.Bytes)
+		}
+		return nil
+	}
+
+	err = filepath.Walk(certPath, walkFunc)
+	if err != nil {
+		return nil, err
+	}
+
+	return cert, err
+}
+
 //generate a signed X509 certficate using GMSM2
 func genCertificateGMSM2(baseDir, name string, template, parent *sm2.Certificate, pub *sm2.PublicKey,
 	key bccsp.Key) (*sm2.Certificate, error) {
-
+	fmt.Println("hehehehe", template.PublicKey.(*sm2.PublicKey))
 	//create the x509 public cert
 	certBytes, err := gm.CreateCertificateToMem(template, parent, key)
 
@@ -224,4 +291,29 @@ func genCertificateGMSM2(baseDir, name string, template, parent *sm2.Certificate
 	}
 	return x509Cert, nil
 
+}
+
+// LoadCertificateGMSM2 load a ecdsa cert from a file in cert path
+func LoadCertificateGMSM2(certPath string) (*sm2.Certificate, error) {
+	var cert *sm2.Certificate
+	var err error
+
+	walkFunc := func(path string, info os.FileInfo, err error) error {
+		if strings.HasSuffix(path, ".pem") {
+			rawCert, err := ioutil.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			block, _ := pem.Decode(rawCert)
+			cert, err = utils.DERToSM2Certificate(block.Bytes)
+		}
+		return nil
+	}
+
+	err = filepath.Walk(certPath, walkFunc)
+	if err != nil {
+		return nil, err
+	}
+
+	return cert, err
 }

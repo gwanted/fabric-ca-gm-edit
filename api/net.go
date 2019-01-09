@@ -18,6 +18,7 @@ package api
 
 import (
 	"github.com/cloudflare/cfssl/signer"
+	"github.com/hyperledger/fabric/idemix"
 )
 
 /*
@@ -41,6 +42,12 @@ type EnrollmentRequestNet struct {
 	signer.SignRequest
 	CAName   string
 	AttrReqs []*AttributeRequest `json:"attr_reqs,omitempty"`
+}
+
+// IdemixEnrollmentRequestNet is a request to enroll an identity and get idemix credential
+type IdemixEnrollmentRequestNet struct {
+	*idemix.CredRequest `json:"request"`
+	CAName              string `json:"caname"`
 }
 
 // ReenrollmentRequestNet is a request to reenroll an identity.
@@ -93,6 +100,11 @@ type AddAffiliationRequestNet struct {
 // ModifyAffiliationRequestNet is a network request for modifying an existing affiliation
 type ModifyAffiliationRequestNet struct {
 	ModifyAffiliationRequest
+}
+
+// GetCertificatesRequestNet is a network request for getting certificates
+type GetCertificatesRequestNet struct {
+	GetCertificatesRequest
 }
 
 // KeySig is a public key, signature, and signature algorithm tuple

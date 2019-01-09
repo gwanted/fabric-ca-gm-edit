@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package cauthdsl
@@ -20,10 +10,10 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/common/policies"
 	cb "github.com/hyperledger/fabric/protos/common"
-
-	"github.com/golang/protobuf/proto"
+	"github.com/stretchr/testify/assert"
 )
 
 var acceptAllPolicy *cb.Policy
@@ -56,17 +46,6 @@ func makePolicySource(policyResult bool) *cb.Policy {
 	}
 }
 
-func addPolicy(manager policies.Proposer, id string, policy *cb.Policy) {
-	manager.BeginPolicyProposals(id, nil)
-	_, err := manager.ProposePolicy(id, id, &cb.ConfigPolicy{
-		Policy: policy,
-	})
-	if err != nil {
-		panic(err)
-	}
-	manager.CommitProposals(id)
-}
-
 func providerMap() map[int32]policies.Provider {
 	r := make(map[int32]policies.Provider)
 	r[int32(cb.Policy_SIGNATURE)] = NewPolicyProvider(&mockDeserializer{})
@@ -75,40 +54,71 @@ func providerMap() map[int32]policies.Provider {
 
 func TestAccept(t *testing.T) {
 	policyID := "policyID"
-	m := policies.NewManagerImpl("test", providerMap())
-	addPolicy(m, policyID, acceptAllPolicy)
+	m, err := policies.NewManagerImpl("test", providerMap(), &cb.ConfigGroup{
+		Policies: map[string]*cb.ConfigPolicy{
+			policyID: {Policy: acceptAllPolicy},
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, m)
+
 	policy, ok := m.GetPolicy(policyID)
-	if !ok {
-		t.Error("Should have found policy which was just added, but did not")
-	}
-	err := policy.Evaluate([]*cb.SignedData{})
-	if err != nil {
-		t.Fatalf("Should not have errored evaluating an acceptAll policy: %s", err)
-	}
+	assert.True(t, ok, "Should have found policy which was just added, but did not")
+	err = policy.Evaluate([]*cb.SignedData{{Identity: []byte("identity"), Data: []byte("data"), Signature: []byte("sig")}})
+	assert.NoError(t, err, "Should not have errored evaluating an acceptAll policy")
 }
 
 func TestReject(t *testing.T) {
 	policyID := "policyID"
-	m := policies.NewManagerImpl("test", providerMap())
-	addPolicy(m, policyID, rejectAllPolicy)
+	m, err := policies.NewManagerImpl("test", providerMap(), &cb.ConfigGroup{
+		Policies: map[string]*cb.ConfigPolicy{
+			policyID: {Policy: rejectAllPolicy},
+		},
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, m)
 	policy, ok := m.GetPolicy(policyID)
-	if !ok {
-		t.Error("Should have found policy which was just added, but did not")
-	}
-	err := policy.Evaluate([]*cb.SignedData{})
-	if err == nil {
-		t.Fatal("Should have errored evaluating the rejectAll policy")
-	}
+	assert.True(t, ok, "Should have found policy which was just added, but did not")
+	err = policy.Evaluate([]*cb.SignedData{{Identity: []byte("identity"), Data: []byte("data"), Signature: []byte("sig")}})
+	assert.Error(t, err, "Should have errored evaluating an rejectAll policy")
 }
 
 func TestRejectOnUnknown(t *testing.T) {
-	m := policies.NewManagerImpl("test", providerMap())
+	m, err := policies.NewManagerImpl("test", providerMap(), &cb.ConfigGroup{})
+	assert.NoError(t, err)
+	assert.NotNil(t, m)
 	policy, ok := m.GetPolicy("FakePolicyID")
-	if ok {
-		t.Error("Should not have found policy which was never added, but did")
-	}
-	err := policy.Evaluate([]*cb.SignedData{})
-	if err == nil {
-		t.Fatal("Should have errored evaluating the default policy")
-	}
+	assert.False(t, ok, "Should not have found policy which was never added, but did")
+	err = policy.Evaluate([]*cb.SignedData{{Identity: []byte("identity"), Data: []byte("data"), Signature: []byte("sig")}})
+	assert.Error(t, err, "Should have errored evaluating the default policy")
+}
+
+func TestNewPolicyErrorCase(t *testing.T) {
+	provider := NewPolicyProvider(nil)
+
+	pol1, msg1, err1 := provider.NewPolicy([]byte{0})
+	assert.Nil(t, pol1)
+	assert.Nil(t, msg1)
+	assert.EqualError(t, err1, "Error unmarshaling to SignaturePolicy: proto: common.SignaturePolicyEnvelope: illegal tag 0 (wire type 0)")
+
+	sigPolicy2 := &cb.SignaturePolicyEnvelope{Version: -1}
+	data2 := marshalOrPanic(sigPolicy2)
+	pol2, msg2, err2 := provider.NewPolicy(data2)
+	assert.Nil(t, pol2)
+	assert.Nil(t, msg2)
+	assert.EqualError(t, err2, "This evaluator only understands messages of version 0, but version was -1")
+
+	pol3, msg3, err3 := provider.NewPolicy([]byte{})
+	assert.Nil(t, pol3)
+	assert.Nil(t, msg3)
+	assert.EqualError(t, err3, "Empty policy element")
+
+	var pol4 *policy = nil
+	err4 := pol4.Evaluate([]*cb.SignedData{})
+	assert.EqualError(t, err4, "No such policy")
+}
+
+func TestVerifyFirstPanics(t *testing.T) {
+	d := &deserializeAndVerify{}
+	assert.Panics(t, func() { d.Verify() })
 }

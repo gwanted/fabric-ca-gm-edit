@@ -17,6 +17,8 @@ limitations under the License.
 package msp
 
 import (
+	"time"
+
 	m "github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protos/msp"
 )
@@ -24,13 +26,17 @@ import (
 type noopmsp struct {
 }
 
-// NewNoopMsp returns a no-op implementation of the MSP inteface
+// NewNoopMsp returns a no-op implementation of the MSP interface
 func NewNoopMsp() m.MSP {
 	return &noopmsp{}
 }
 
 func (msp *noopmsp) Setup(*msp.MSPConfig) error {
 	return nil
+}
+
+func (msp *noopmsp) GetVersion() m.MSPVersion {
+	return m.MSPv1_0
 }
 
 func (msp *noopmsp) GetType() m.ProviderType {
@@ -84,6 +90,11 @@ func (msp *noopmsp) SatisfiesPrincipal(id m.Identity, principal *msp.MSPPrincipa
 	return nil
 }
 
+// IsWellFormed checks if the given identity can be deserialized into its provider-specific form
+func (msp *noopmsp) IsWellFormed(_ *msp.SerializedIdentity) error {
+	return nil
+}
+
 type noopidentity struct {
 }
 
@@ -91,8 +102,16 @@ func newNoopIdentity() (m.Identity, error) {
 	return &noopidentity{}, nil
 }
 
+func (id *noopidentity) Anonymous() bool {
+	panic("implement me")
+}
+
 func (id *noopidentity) SatisfiesPrincipal(*msp.MSPPrincipal) error {
 	return nil
+}
+
+func (id *noopidentity) ExpiresAt() time.Time {
+	return time.Time{}
 }
 
 func (id *noopidentity) GetIdentifier() *m.IdentityIdentifier {

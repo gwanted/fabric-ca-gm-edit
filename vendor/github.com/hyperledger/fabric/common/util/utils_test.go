@@ -18,19 +18,30 @@ package util
 
 import (
 	"bytes"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/op/go-logging"
+	"github.com/stretchr/testify/assert"
 )
 
-func TestComputeCryptoHash(t *testing.T) {
+func TestComputeSHA256(t *testing.T) {
 	if bytes.Compare(ComputeSHA256([]byte("foobar")), ComputeSHA256([]byte("foobar"))) != 0 {
 		t.Fatalf("Expected hashes to match, but they did not match")
 	}
 	if bytes.Compare(ComputeSHA256([]byte("foobar1")), ComputeSHA256([]byte("foobar2"))) == 0 {
 		t.Fatalf("Expected hashes to be different, but they match")
+	}
+}
+
+func TestComputeSHA3256(t *testing.T) {
+	if bytes.Compare(ComputeSHA3256([]byte("foobar")), ComputeSHA3256([]byte("foobar"))) != 0 {
+		t.Fatalf("Expected hashes to match, but they did not match")
+	}
+	if bytes.Compare(ComputeSHA3256([]byte("foobar1")), ComputeSHA3256([]byte("foobar2"))) == 0 {
+		t.Fatalf("Expected hashed to be different, but they match")
 	}
 }
 
@@ -82,7 +93,21 @@ func TestGeneratIDfromTxSHAHash(t *testing.T) {
 func TestGenerateIDWithAlg(t *testing.T) {
 	_, err := GenerateIDWithAlg("sha256", []byte{1, 1, 1, 1})
 	if err != nil {
-		t.Fatalf("Decoder failure: %v", err)
+		t.Fatalf("Generator failure: %v", err)
+	}
+}
+
+func TestGenerateIDWithDefaultAlg(t *testing.T) {
+	_, err := GenerateIDWithAlg("", []byte{1, 1, 1, 1})
+	if err != nil {
+		t.Fatalf("Generator failure: %v", err)
+	}
+}
+
+func TestGenerateIDWithWrongAlg(t *testing.T) {
+	_, err := GenerateIDWithAlg("foobar", []byte{1, 1, 1, 1})
+	if err == nil {
+		t.Fatalf("Expected error")
 	}
 }
 
@@ -101,21 +126,29 @@ func TestFindMissingElements(t *testing.T) {
 	}
 }
 
-// This test checks go-logging is thread safe with regard to
-// concurrent SetLevel invocation and log invocations.
-// Fails without the concurrency fix (adding RWLock to level.go)
-// In case the go-logging will be overwritten and its concurrency fix
-// will be regressed, this test should fail.
-func TestConcurrencyNotFail(t *testing.T) {
-	logger := logging.MustGetLogger("test")
-	go func() {
-		for i := 0; i < 100; i++ {
-			logging.SetLevel(logging.Level(logging.DEBUG), "test")
+func TestToChaincodeArgs(t *testing.T) {
+	expected := [][]byte{[]byte("foo"), []byte("bar")}
+	actual := ToChaincodeArgs("foo", "bar")
+	if len(expected) != len(actual) {
+		t.Fatalf("Got %v, expected %v", actual, expected)
+	}
+	for i := range expected {
+		if bytes.Compare(expected[i], actual[i]) != 0 {
+			t.Fatalf("Got %v, expected %v", actual, expected)
 		}
-	}()
+	}
+}
 
-	for i := 0; i < 100; i++ {
-		logger.Info("")
+func TestArrayToChaincodeArgs(t *testing.T) {
+	expected := [][]byte{[]byte("foo"), []byte("bar")}
+	actual := ArrayToChaincodeArgs([]string{"foo", "bar"})
+	if len(expected) != len(actual) {
+		t.Fatalf("Got %v, expected %v", actual, expected)
+	}
+	for i := range expected {
+		if bytes.Compare(expected[i], actual[i]) != 0 {
+			t.Fatalf("Got %v, expected %v", actual, expected)
+		}
 	}
 }
 
@@ -141,4 +174,46 @@ func TestMetadataSignatureBytesNil(t *testing.T) {
 	if !bytes.Equal(result, expected) {
 		t.Errorf("Did not concatenate bytes correctly, expected %s, got %s", expected, result)
 	}
+}
+
+type A struct {
+	s string
+}
+
+type B struct {
+	A A
+	i int
+	X string
+}
+
+type C struct{}
+
+type D struct {
+	B B
+	c *C
+}
+
+func (a A) String() string {
+	return fmt.Sprintf("I'm '%s'", a.s)
+}
+
+func TestFlattenStruct(t *testing.T) {
+	d := &D{
+		B: B{
+			A: A{
+				s: "foo",
+			},
+			i: 42,
+			X: "bar ",
+		},
+		c: nil,
+	}
+
+	var x []string
+	flatten("", &x, reflect.ValueOf(d))
+	assert.Equal(t, 4, len(x), "expect 3 items")
+	assert.Equal(t, x[0], "B.A = I'm 'foo'")
+	assert.Equal(t, x[1], "B.i = 42")
+	assert.Equal(t, x[2], "B.X = \"bar \"")
+	assert.Equal(t, x[3], "c =")
 }

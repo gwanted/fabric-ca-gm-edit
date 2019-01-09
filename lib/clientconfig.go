@@ -22,9 +22,9 @@ import (
 	"path"
 
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/lib/tls"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/tls"
+	"github.com/hyperledger/fabric-ca/util"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/pkg/errors"
 )
@@ -40,7 +40,9 @@ type ClientConfig struct {
 	Revoke     api.RevocationRequest
 	CAInfo     api.GetCAInfoRequest
 	CAName     string               `help:"Name of CA"`
-	CSP        *factory.FactoryOpts `mapstructure:"bccsp"`
+	CSP        *factory.FactoryOpts `mapstructure:"bccsp" hide:"true"`
+	Debug      bool                 `opt:"d" help:"Enable debug level logging" hide:"true"`
+	LogLevel   string               `help:"Set logging level (info, warning, debug, error, fatal, critical)"`
 }
 
 // Enroll a client given the server's URL and the client's home directory.

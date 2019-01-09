@@ -1,73 +1,91 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package policies
 
 import (
+	"bytes"
 	"fmt"
 
-	cb "github.com/hyperledger/fabric/protos/common"
-
 	"github.com/golang/protobuf/proto"
+	cb "github.com/hyperledger/fabric/protos/common"
+	"go.uber.org/zap/zapcore"
 )
 
 type implicitMetaPolicy struct {
-	conf        *cb.ImplicitMetaPolicy
 	threshold   int
 	subPolicies []Policy
+
+	// Only used for logging
+	managers      map[string]*ManagerImpl
+	subPolicyName string
 }
 
 // NewPolicy creates a new policy based on the policy bytes
-func newImplicitMetaPolicy(data []byte) (*implicitMetaPolicy, error) {
-	imp := &cb.ImplicitMetaPolicy{}
-	if err := proto.Unmarshal(data, imp); err != nil {
+func newImplicitMetaPolicy(data []byte, managers map[string]*ManagerImpl) (*implicitMetaPolicy, error) {
+	definition := &cb.ImplicitMetaPolicy{}
+	if err := proto.Unmarshal(data, definition); err != nil {
 		return nil, fmt.Errorf("Error unmarshaling to ImplicitMetaPolicy: %s", err)
 	}
 
-	return &implicitMetaPolicy{
-		conf: imp,
-	}, nil
-}
+	subPolicies := make([]Policy, len(managers))
 
-func (imp *implicitMetaPolicy) initialize(config *policyConfig) {
-	imp.subPolicies = make([]Policy, len(config.managers))
 	i := 0
-	for _, manager := range config.managers {
-		imp.subPolicies[i], _ = manager.GetPolicy(imp.conf.SubPolicy)
+	for _, manager := range managers {
+		subPolicies[i], _ = manager.GetPolicy(definition.SubPolicy)
 		i++
 	}
 
-	switch imp.conf.Rule {
+	var threshold int
+
+	switch definition.Rule {
 	case cb.ImplicitMetaPolicy_ANY:
-		imp.threshold = 1
+		threshold = 1
 	case cb.ImplicitMetaPolicy_ALL:
-		imp.threshold = len(imp.subPolicies)
+		threshold = len(subPolicies)
 	case cb.ImplicitMetaPolicy_MAJORITY:
-		imp.threshold = len(imp.subPolicies)/2 + 1
+		threshold = len(subPolicies)/2 + 1
 	}
 
 	// In the special case that there are no policies, consider 0 to be a majority or any
-	if len(imp.subPolicies) == 0 {
-		imp.threshold = 0
+	if len(subPolicies) == 0 {
+		threshold = 0
 	}
+
+	return &implicitMetaPolicy{
+		subPolicies:   subPolicies,
+		threshold:     threshold,
+		managers:      managers,
+		subPolicyName: definition.SubPolicy,
+	}, nil
 }
 
 // Evaluate takes a set of SignedData and evaluates whether this set of signatures satisfies the policy
 func (imp *implicitMetaPolicy) Evaluate(signatureSet []*cb.SignedData) error {
+	logger.Debugf("This is an implicit meta policy, it will trigger other policy evaluations, whose failures may be benign")
 	remaining := imp.threshold
+
+	defer func() {
+		if remaining != 0 {
+			// This log message may be large and expensive to construct, so worth checking the log level
+			if logger.IsEnabledFor(zapcore.DebugLevel) {
+				var b bytes.Buffer
+				b.WriteString(fmt.Sprintf("Evaluation Failed: Only %d policies were satisfied, but needed %d of [ ", imp.threshold-remaining, imp.threshold))
+				for m := range imp.managers {
+					b.WriteString(m)
+					b.WriteString(".")
+					b.WriteString(imp.subPolicyName)
+					b.WriteString(" ")
+				}
+				b.WriteString("]")
+				logger.Debugf(b.String())
+			}
+		}
+	}()
+
 	for _, policy := range imp.subPolicies {
 		if policy.Evaluate(signatureSet) == nil {
 			remaining--

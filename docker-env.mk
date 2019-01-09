@@ -47,8 +47,12 @@ DRUN = docker run -i --rm $(DOCKER_RUN_FLAGS) \
 
 DBUILD = docker build $(DOCKER_BUILD_FLAGS)
 
-DOCKER_TAG=$(ARCH)-$(PROJECT_VERSION)
+BASE_DOCKER_NS ?= hyperledger
 BASE_DOCKER_TAG=$(ARCH)-$(BASEIMAGE_RELEASE)
+
+DOCKER_NS ?= hyperledger
+NEXUS_URL ?= nexus3.hyperledger.org:10001/hyperledger
+DOCKER_TAG=$(ARCH)-$(PROJECT_VERSION)
 
 DOCKER_GO_LDFLAGS += $(GO_LDFLAGS)
 ifeq ($(FABRIC_CA_DYNAMIC_LINK),true)

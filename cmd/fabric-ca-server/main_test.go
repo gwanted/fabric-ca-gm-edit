@@ -27,10 +27,11 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/lib"
-	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/cloudflare/cfssl/log"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib"
+	"github.com/hyperledger/fabric-ca/lib/metadata"
+	"github.com/hyperledger/fabric-ca/util"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -118,6 +119,8 @@ func TestErrors(t *testing.T) {
 		{[]string{cmdName, "init", "-c", initYaml, "-b", "user:"}, "empty password"},
 		{[]string{cmdName, "bogus", "-c", initYaml, "-b", "user:pass"}, "unknown command"},
 		{[]string{cmdName, "start", "-c"}, "needs an argument:"},
+		{[]string{cmdName, "start", "--csr.keyrequest.algo", "fakeAlgo"}, "Invalid algorithm: fakeAlgo"},
+		{[]string{cmdName, "start", "--csr.keyrequest.algo", "ecdsa", "--csr.keyrequest.size", "12345"}, "Invalid ECDSA key size: 12345"},
 		{[]string{cmdName, "start", "-c", startYaml, "-b", "user:pass", "ca.key"}, "Unrecognized arguments found"},
 	}
 
@@ -370,6 +373,49 @@ func TestVersion(t *testing.T) {
 	}
 }
 
+func TestServerLogLevelCLI(t *testing.T) {
+	// Not passing in -b flag, don't need for the server to completely start to
+	// verify that the log level is correctly getting set
+	RunMain([]string{cmdName, "start", "--loglevel", "info"})
+	assert.Equal(t, log.Level, log.LevelInfo)
+
+	RunMain([]string{cmdName, "start", "--loglevel", "debug"})
+	assert.Equal(t, log.Level, log.LevelDebug)
+
+	RunMain([]string{cmdName, "start", "--loglevel", "warning"})
+	assert.Equal(t, log.Level, log.LevelWarning)
+
+	RunMain([]string{cmdName, "start", "--loglevel", "fatal"})
+	assert.Equal(t, log.Level, log.LevelFatal)
+
+	RunMain([]string{cmdName, "start", "--loglevel", "critical"})
+	assert.Equal(t, log.Level, log.LevelCritical)
+}
+
+func TestServerLogLevelEnvVar(t *testing.T) {
+	// Not passing in -b flag, don't need for the server to completely start to
+	// verify that the log level is correctly getting set
+	os.Setenv("FABRIC_CA_SERVER_LOGLEVEL", "info")
+	RunMain([]string{cmdName, "start"})
+	assert.Equal(t, log.LevelInfo, log.Level)
+
+	os.Setenv("FABRIC_CA_SERVER_LOGLEVEL", "debug")
+	RunMain([]string{cmdName, "start"})
+	assert.Equal(t, log.LevelDebug, log.Level)
+
+	os.Setenv("FABRIC_CA_SERVER_LOGLEVEL", "warning")
+	RunMain([]string{cmdName, "start"})
+	assert.Equal(t, log.LevelWarning, log.Level)
+
+	os.Setenv("FABRIC_CA_SERVER_LOGLEVEL", "fatal")
+	RunMain([]string{cmdName, "start"})
+	assert.Equal(t, log.LevelFatal, log.Level)
+
+	os.Setenv("FABRIC_CA_SERVER_LOGLEVEL", "critical")
+	RunMain([]string{cmdName, "start"})
+	assert.Equal(t, log.LevelCritical, log.Level)
+}
+
 // Run server with specified args and check if the configuration and datasource
 // files exist in the specified locations
 func checkConfigAndDBLoc(t *testing.T, args TestData, cfgFile string, dsFile string) {
@@ -393,12 +439,18 @@ func TestClean(t *testing.T) {
 	os.Remove(unsupportedFileType)
 	os.Remove("ca-key.pem")
 	os.Remove("ca-cert.pem")
+	os.Remove("IssuerSecretKey")
+	os.Remove("IssuerPublicKey")
+	os.Remove("IssuerRevocationPublicKey")
 	os.Remove("fabric-ca-server.db")
 	os.RemoveAll("keystore")
 	os.RemoveAll("msp")
 	os.RemoveAll("../../testdata/msp")
 	os.Remove("../../testdata/fabric-ca-server.db")
 	os.Remove("../../testdata/ca-cert.pem")
+	os.Remove("../../testdata/IssuerSecretKey")
+	os.Remove("../../testdata/IssuerPublicKey")
+	os.Remove("../../testdata/IssuerRevocationPublicKey")
 	os.RemoveAll(ldapTestDir)
 	os.RemoveAll("testregattr")
 }
@@ -406,7 +458,8 @@ func TestClean(t *testing.T) {
 func cleanUpMultiCAFiles() {
 	caFolder := "../../testdata/ca/rootca"
 	nestedFolders := []string{"ca1", "ca2"}
-	removeFiles := []string{"msp", "ca-cert.pem", "ca-key.pem", "fabric-ca-server.db", "fabric-ca2-server.db"}
+	removeFiles := []string{"msp", "ca-cert.pem", "ca-key.pem", "fabric-ca-server.db",
+		"fabric-ca2-server.db", "IssuerSecretKey", "IssuerPublicKey", "IssuerRevocationPublicKey"}
 
 	for _, nestedFolder := range nestedFolders {
 		path := filepath.Join(caFolder, nestedFolder)

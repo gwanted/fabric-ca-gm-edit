@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2017 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package sanitycheck
@@ -19,17 +9,15 @@ package sanitycheck
 import (
 	"fmt"
 
-	"github.com/hyperledger/fabric/common/configtx"
+	"github.com/golang/protobuf/proto"
+	newchannelconfig "github.com/hyperledger/fabric/common/channelconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	mspprotos "github.com/hyperledger/fabric/protos/msp"
-	"github.com/hyperledger/fabric/protos/utils"
-
-	"github.com/golang/protobuf/proto"
 )
 
 type Messages struct {
 	GeneralErrors   []string          `json:"general_errors"`
-	ElementWarnings []*ElementMessage `json:"element_errors"`
+	ElementWarnings []*ElementMessage `json:"element_warnings"`
 	ElementErrors   []*ElementMessage `json:"element_errors"`
 }
 
@@ -39,14 +27,9 @@ type ElementMessage struct {
 }
 
 func Check(config *cb.Config) (*Messages, error) {
-	envConfig, err := utils.CreateSignedEnvelope(cb.HeaderType_CONFIG, "sanitycheck", nil, &cb.ConfigEnvelope{Config: config}, 0, 0)
-	if err != nil {
-		return nil, err
-	}
-
 	result := &Messages{}
 
-	cm, err := configtx.NewManagerImpl(envConfig, configtx.NewInitializer(), nil)
+	bundle, err := newchannelconfig.NewBundle("sanitycheck", config)
 	if err != nil {
 		result.GeneralErrors = []string{err.Error()}
 		return result, nil
@@ -57,13 +40,13 @@ func Check(config *cb.Config) (*Messages, error) {
 	// we collect this manually.
 	mspMap := make(map[string]struct{})
 
-	if ac, ok := cm.ApplicationConfig(); ok {
+	if ac, ok := bundle.ApplicationConfig(); ok {
 		for _, org := range ac.Organizations() {
 			mspMap[org.MSPID()] = struct{}{}
 		}
 	}
 
-	if oc, ok := cm.OrdererConfig(); ok {
+	if oc, ok := bundle.OrdererConfig(); ok {
 		for _, org := range oc.Organizations() {
 			mspMap[org.MSPID()] = struct{}{}
 		}

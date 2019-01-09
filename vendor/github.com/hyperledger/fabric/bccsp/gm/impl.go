@@ -21,11 +21,10 @@ import (
 	"hash"
 	"reflect"
 
-	"github.com/cloudflare/cfssl/log"
-	"github.com/pkg/errors"
-	"github.com/tjfoc/gmsm/sm3"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/pkg/errors"
+	"github.com/tjfoc/gmsm/sm3"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -320,7 +319,7 @@ func (csp *impl) Verify(k bccsp.Key, signature, digest []byte, opts bccsp.Signer
 	if len(digest) == 0 {
 		return false, errors.New("Invalid digest. Cannot be empty.")
 	}
-	log.Debugf("verify!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+
 	verifier, found := csp.verifiers[reflect.TypeOf(k)]
 	if !found {
 		return false, errors.Errorf("Unsupported 'VerifyKey' provided [%v]", k)

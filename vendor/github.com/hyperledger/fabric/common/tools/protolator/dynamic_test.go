@@ -22,7 +22,6 @@ import (
 
 	"github.com/hyperledger/fabric/common/tools/protolator/testprotos"
 	"github.com/hyperledger/fabric/protos/utils"
-
 	"github.com/stretchr/testify/assert"
 )
 
@@ -75,7 +74,7 @@ func TestMapDynamicMsg(t *testing.T) {
 	startMsg := &testprotos.DynamicMsg{
 		DynamicType: "SimpleMsg",
 		MapDynamicField: map[string]*testprotos.ContextlessMsg{
-			mapKey: &testprotos.ContextlessMsg{
+			mapKey: {
 				OpaqueField: utils.MarshalOrPanic(&testprotos.SimpleMsg{
 					PlainField: pfValue,
 				}),
@@ -111,7 +110,7 @@ func TestSliceDynamicMsg(t *testing.T) {
 	startMsg := &testprotos.DynamicMsg{
 		DynamicType: "SimpleMsg",
 		SliceDynamicField: []*testprotos.ContextlessMsg{
-			&testprotos.ContextlessMsg{
+			{
 				OpaqueField: utils.MarshalOrPanic(&testprotos.SimpleMsg{
 					PlainField: pfValue,
 				}),

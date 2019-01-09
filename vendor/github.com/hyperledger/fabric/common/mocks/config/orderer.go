@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2016 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package config
@@ -19,14 +9,16 @@ package config
 import (
 	"time"
 
-	"github.com/hyperledger/fabric/common/config"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 )
 
-// Orderer is a mock implementation of config.Orderer
+// Orderer is a mock implementation of channelconfig.Orderer
 type Orderer struct {
 	// ConsensusTypeVal is returned as the result of ConsensusType()
 	ConsensusTypeVal string
+	// ConsensusMetadataVal is returned as the result of ConsensusMetadata()
+	ConsensusMetadataVal []byte
 	// BatchSizeVal is returned as the result of BatchSize()
 	BatchSizeVal *ab.BatchSize
 	// BatchTimeoutVal is returned as the result of BatchTimeout()
@@ -36,35 +28,83 @@ type Orderer struct {
 	// MaxChannelsCountVal is returns as the result of MaxChannelsCount()
 	MaxChannelsCountVal uint64
 	// OrganizationsVal is returned as the result of Organizations()
-	OrganizationsVal map[string]config.Org
+	OrganizationsVal map[string]channelconfig.Org
+	// CapabilitiesVal is returned as the result of Capabilities()
+	CapabilitiesVal channelconfig.OrdererCapabilities
 }
 
 // ConsensusType returns the ConsensusTypeVal
-func (scm *Orderer) ConsensusType() string {
-	return scm.ConsensusTypeVal
+func (o *Orderer) ConsensusType() string {
+	return o.ConsensusTypeVal
+}
+
+// ConsensusMetadata returns the ConsensusMetadataVal
+func (o *Orderer) ConsensusMetadata() []byte {
+	return o.ConsensusMetadataVal
 }
 
 // BatchSize returns the BatchSizeVal
-func (scm *Orderer) BatchSize() *ab.BatchSize {
-	return scm.BatchSizeVal
+func (o *Orderer) BatchSize() *ab.BatchSize {
+	return o.BatchSizeVal
 }
 
 // BatchTimeout returns the BatchTimeoutVal
-func (scm *Orderer) BatchTimeout() time.Duration {
-	return scm.BatchTimeoutVal
+func (o *Orderer) BatchTimeout() time.Duration {
+	return o.BatchTimeoutVal
 }
 
 // KafkaBrokers returns the KafkaBrokersVal
-func (scm *Orderer) KafkaBrokers() []string {
-	return scm.KafkaBrokersVal
+func (o *Orderer) KafkaBrokers() []string {
+	return o.KafkaBrokersVal
 }
 
 // MaxChannelsCount returns the MaxChannelsCountVal
-func (scm *Orderer) MaxChannelsCount() uint64 {
-	return scm.MaxChannelsCountVal
+func (o *Orderer) MaxChannelsCount() uint64 {
+	return o.MaxChannelsCountVal
 }
 
 // Organizations returns OrganizationsVal
-func (scm *Orderer) Organizations() map[string]config.Org {
-	return scm.OrganizationsVal
+func (o *Orderer) Organizations() map[string]channelconfig.Org {
+	return o.OrganizationsVal
+}
+
+// Capabilities returns CapabilitiesVal
+func (o *Orderer) Capabilities() channelconfig.OrdererCapabilities {
+	return o.CapabilitiesVal
+}
+
+// OrdererCapabilities mocks the channelconfig.OrdererCapabilities interface
+type OrdererCapabilities struct {
+	// SupportedErr is returned by Supported()
+	SupportedErr error
+
+	// PredictableChannelTemplateVal is returned by PredictableChannelTemplate()
+	PredictableChannelTemplateVal bool
+
+	// ResubmissionVal is returned by Resubmission()
+	ResubmissionVal bool
+
+	// ExpirationVal is returned by ExpirationCheck()
+	ExpirationVal bool
+}
+
+// Supported returns SupportedErr
+func (oc *OrdererCapabilities) Supported() error {
+	return oc.SupportedErr
+}
+
+// PredictableChannelTemplate returns PredictableChannelTemplateVal
+func (oc *OrdererCapabilities) PredictableChannelTemplate() bool {
+	return oc.PredictableChannelTemplateVal
+}
+
+// Resubmission returns ResubmissionVal
+func (oc *OrdererCapabilities) Resubmission() bool {
+	return oc.ResubmissionVal
+}
+
+// ExpirationCheck specifies whether the orderer checks for identity expiration checks
+// when validating messages
+func (oc *OrdererCapabilities) ExpirationCheck() bool {
+	return oc.ExpirationVal
 }

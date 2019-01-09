@@ -37,7 +37,7 @@
 #############################################################################
 
 # Version of config file
-version: 1.1.0
+version: 1.4.0-rc2
 
 # Server's listening port (default: 7054)
 port: 7054
@@ -128,8 +128,8 @@ registry:
        type: client
        affiliation: ""
        attrs:
-          hf.Registrar.Roles: "peer,orderer,client,user"
-          hf.Registrar.DelegateRoles: "peer,orderer,client,user"
+          hf.Registrar.Roles: "*"
+          hf.Registrar.DelegateRoles: "*"
           hf.Revoker: true
           hf.IntermediateCA: true
           hf.GenCRL: true
@@ -147,8 +147,8 @@ registry:
 #  or "mysql".
 #############################################################################
 db:
-  type: mysql
-  datasource: root:hello123@tcp(10.36.8.175:3306)/fabric_ca_org_third?parseTime=true
+  type: sqlite3
+  datasource: fabric-ca-server.db
   tls:
       enabled: false
       certfiles:
@@ -302,6 +302,9 @@ signing:
 ###########################################################################
 csr:
    cn: fabric-ca-server
+   keyrequest:
+     algo: sm2
+     size: 256
    names:
       - C: US
         ST: "North Carolina"
@@ -314,6 +317,30 @@ csr:
    ca:
       expiry: 131400h
       pathlength: 1
+
+###########################################################################
+# Each CA can issue both X509 enrollment certificate as well as Idemix
+# Credential. This section specifies configuration for the issuer component
+# that is responsible for issuing Idemix credentials.
+###########################################################################
+idemix:
+  # Specifies pool size for revocation handles. A revocation handle is an unique identifier of an
+  # Idemix credential. The issuer will create a pool revocation handles of this specified size. When
+  # a credential is requested, issuer will get handle from the pool and assign it to the credential.
+  # Issuer will repopulate the pool with new handles when the last handle in the pool is used.
+  # A revocation handle and credential revocation information (CRI) are used to create non revocation proof
+  # by the prover to prove to the verifier that her credential is not revoked.
+  rhpoolsize: 1000
+
+  # The Idemix credential issuance is a two step process. First step is to  get a nonce from the issuer
+  # and second step is send credential request that is constructed using the nonce to the isuser to
+  # request a credential. This configuration property specifies expiration for the nonces. By default is
+  # nonces expire after 15 seconds. The value is expressed in the time.Duration format (see https://golang.org/pkg/time/#ParseDuration).
+  nonceexpiration: 15s
+
+  # Specifies interval at which expired nonces are removed from datastore. Default value is 15 minutes.
+  #  The value is expressed in the time.Duration format (see https://golang.org/pkg/time/#ParseDuration)
+  noncesweepinterval: 15m
 
 #############################################################################
 # BCCSP (BlockChain Crypto Service Provider) section is used to select which
@@ -338,7 +365,9 @@ bccsp:
 # Automatically generate <number-of-CAs> non-default CAs.  The names of these
 # additional CAs are "ca1", "ca2", ... "caN", where "N" is <number-of-CAs>
 # This is particularly useful in a development environment to quickly set up
-# multiple CAs.
+# multiple CAs. Note that, this config option is not applicable to intermediate CA server
+# i.e., Fabric CA server that is started with intermediate.parentserver.url config
+# option (-u command line option)
 #
 # 2) --cafiles <CA-config-files>
 # For each CA config file in the list, generate a separate signing CA.  Each CA
@@ -402,3 +431,15 @@ intermediate:
     client:
       certfile:
       keyfile:
+
+#############################################################################
+# CA configuration section
+#
+# Configure the number of incorrect password attempts are allowed for
+# identities. By default, the value of 'passwordattempts' is 10, which
+# means that 10 incorrect password attempts can be made before an identity get
+# locked out.
+#############################################################################
+cfg:
+  identities:
+    passwordattempts: 10

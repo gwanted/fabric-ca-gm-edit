@@ -1,17 +1,7 @@
 /*
 Copyright IBM Corp. 2017 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package attr
@@ -22,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/util"
 	"github.com/pkg/errors"
 )
 
@@ -177,7 +167,7 @@ func (ac *attributeControl) isRegistrarAuthorized(requestedAttr *api.Attribute, 
 		}
 		callersAttrValue = callersAttribute.GetValue()
 
-		log.Debugf("Checking if caller is authorized to register attribute '%s' with the requested value of '%s'", requestedAttrName, requestedAttr.GetValue)
+		log.Debugf("Checking if caller is authorized to register attribute '%s' with the requested value of '%s'", requestedAttrName, requestedAttr.GetValue())
 	}
 
 	switch ac.attrType {
@@ -238,9 +228,9 @@ func (ac *attributeControl) validateListAttribute(requestedAttr *api.Attribute, 
 		return nil
 	}
 	// Make sure the values requested for attribute is equal to or a subset of the registrar's attribute
-	err := util.IsSubsetOf(requestedAttrValue, callersAttrValue)
+	err := ac.IsSubsetOf(requestedAttrValue, callersAttrValue)
 	if err != nil {
-		return errors.WithMessage(err, fmt.Sprintf("The requested values for attribute '%s' is a superset of the caller's attribute value", ac.getName()))
+		return err
 	}
 	// If requested attribute is 'hf.Registrar.DeletegateRoles', make sure it is equal or a subset of the user's hf.Registrar.Roles attribute
 	if ac.getName() == DelegateRoles {
@@ -248,6 +238,17 @@ func (ac *attributeControl) validateListAttribute(requestedAttr *api.Attribute, 
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (ac *attributeControl) IsSubsetOf(requestedAttrValue, callersAttrValue string) error {
+	if (ac.getName() == Roles || ac.getName() == DelegateRoles) && util.ListContains(callersAttrValue, "*") {
+		return nil
+	}
+	err := util.IsSubsetOf(requestedAttrValue, callersAttrValue)
+	if err != nil {
+		return errors.WithMessage(err, fmt.Sprintf("The requested values for attribute '%s' is a superset of the caller's attribute value", ac.getName()))
 	}
 	return nil
 }
@@ -313,6 +314,9 @@ func checkDelegateRoleValues(reqAttrs []api.Attribute, user AttributeControl) er
 			}
 		}
 	}
+	if util.ListContains(roles, "*") {
+		return nil
+	}
 	delegateRoles := GetAttrValue(reqAttrs, DelegateRoles)
 	err := util.IsSubsetOf(delegateRoles, roles)
 	if err != nil {
@@ -358,4 +362,34 @@ func GetAttrValue(attrs []api.Attribute, name string) string {
 		}
 	}
 	return ""
+}
+
+// ConvertAttrs converts attribute string into an Attribute object array
+func ConvertAttrs(inAttrs map[string]string) ([]api.Attribute, error) {
+	var outAttrs []api.Attribute
+	for name, value := range inAttrs {
+		sattr := strings.Split(value, ":")
+		if len(sattr) > 2 {
+			return []api.Attribute{}, errors.Errorf("Multiple ':' characters not allowed "+
+				"in attribute specification '%s'; The attributes have been discarded!", value)
+		}
+		attrFlag := ""
+		if len(sattr) > 1 {
+			attrFlag = sattr[1]
+		}
+		ecert := false
+		switch strings.ToLower(attrFlag) {
+		case "":
+		case "ecert":
+			ecert = true
+		default:
+			return []api.Attribute{}, errors.Errorf("Invalid attribute flag: '%s'", attrFlag)
+		}
+		outAttrs = append(outAttrs, api.Attribute{
+			Name:  name,
+			Value: sattr[0],
+			ECert: ecert,
+		})
+	}
+	return outAttrs, nil
 }

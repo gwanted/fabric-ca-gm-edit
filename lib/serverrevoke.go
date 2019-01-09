@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lib
@@ -21,9 +11,9 @@ import (
 	"strings"
 
 	"github.com/cloudflare/cfssl/log"
-
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/caerrors"
+	"github.com/hyperledger/fabric-ca/util"
 )
 
 type revocationResponseNet struct {
@@ -50,7 +40,7 @@ func newRevokeEndpoint(s *Server) *serverEndpoint {
 }
 
 // Handle an revoke request
-func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
+func revokeHandler(ctx *serverRequestContextImpl) (interface{}, error) {
 	// Parse revoke request body
 	var req api.RevocationRequestNet
 	err := ctx.ReadBody(&req)
@@ -58,7 +48,7 @@ func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
 		return nil, err
 	}
 	// Authentication
-	id, err := ctx.TokenAuthentication()
+	caller, err := ctx.TokenAuthentication()
 	if err != nil {
 		return nil, err
 	}
@@ -67,15 +57,9 @@ func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Authorization
-	// Make sure that the caller has the "hf.Revoker" attribute.
-	err = ca.attributeIsTrue(id, "hf.Revoker")
-	if err != nil {
-		return nil, newHTTPErr(401, ErrNotRevoker, "Caller does not have authority to revoke")
-	}
 
-	req.AKI = strings.TrimLeft(strings.ToLower(req.AKI), "0")
-	req.Serial = strings.TrimLeft(strings.ToLower(req.Serial), "0")
+	req.AKI = parseInput(req.AKI)
+	req.Serial = parseInput(req.Serial)
 
 	certDBAccessor := ca.certDBAccessor
 	registry := ca.registry
@@ -88,23 +72,29 @@ func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
 
 		certificate, err := certDBAccessor.GetCertificateWithID(req.Serial, req.AKI)
 		if err != nil {
-			return nil, newHTTPErr(404, ErrRevCertNotFound, "Certificate with serial %s and AKI %s was not found: %s",
+			return nil, caerrors.NewHTTPErr(404, caerrors.ErrRevCertNotFound, "Certificate with serial %s and AKI %s was not found: %s",
 				req.Serial, req.AKI, err)
 		}
 
+		// Authorization
+		err = checkAuth(caller, certificate.ID, ca)
+		if err != nil {
+			return nil, err
+		}
+
 		if certificate.Status == string(Revoked) {
-			return nil, newHTTPErr(404, ErrCertAlreadyRevoked, "Certificate with serial %s and AKI %s was already revoked",
+			return nil, caerrors.NewHTTPErr(404, caerrors.ErrCertAlreadyRevoked, "Certificate with serial %s and AKI %s was already revoked",
 				req.Serial, req.AKI)
 		}
 
 		if req.Name != "" && req.Name != certificate.ID {
-			return nil, newHTTPErr(400, ErrCertWrongOwner, "Certificate with serial %s and AKI %s is not owned by %s",
+			return nil, caerrors.NewHTTPErr(400, caerrors.ErrCertWrongOwner, "Certificate with serial %s and AKI %s is not owned by %s",
 				req.Serial, req.AKI, req.Name)
 		}
 
 		userInfo, err := registry.GetUser(certificate.ID, nil)
 		if err != nil {
-			return nil, newHTTPErr(404, ErrRevokeIDNotFound, "Identity %s was not found: %s", certificate.ID, err)
+			return nil, caerrors.NewHTTPErr(404, caerrors.ErrRevokeIDNotFound, "Identity %s was not found: %s", certificate.ID, err)
 		}
 
 		if !((req.AKI == calleraki) && (req.Serial == callerserial)) {
@@ -116,14 +106,19 @@ func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
 
 		err = certDBAccessor.RevokeCertificate(req.Serial, req.AKI, reason)
 		if err != nil {
-			return nil, newHTTPErr(500, ErrRevokeFailure, "Revoke of certificate <%s,%s> failed: %s", req.Serial, req.AKI, err)
+			return nil, caerrors.NewHTTPErr(500, caerrors.ErrRevokeFailure, "Revoke of certificate <%s,%s> failed: %s", req.Serial, req.AKI, err)
 		}
 		result.RevokedCerts = append(result.RevokedCerts, api.RevokedCert{Serial: req.Serial, AKI: req.AKI})
 	} else if req.Name != "" {
+		// Authorization
+		err = checkAuth(caller, req.Name, ca)
+		if err != nil {
+			return nil, err
+		}
 
 		user, err := registry.GetUser(req.Name, nil)
 		if err != nil {
-			return nil, newHTTPErr(404, ErrRevokeIDNotFound, "Identity %s was not found: %s", req.Name, err)
+			return nil, caerrors.NewHTTPErr(404, caerrors.ErrRevokeIDNotFound, "Identity %s was not found: %s", req.Name, err)
 		}
 
 		// Set user state to -1 for revoked user
@@ -142,14 +137,14 @@ func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
 
 			err = user.Revoke()
 			if err != nil {
-				return nil, newHTTPErr(500, ErrRevokeUpdateUser, "Failed to revoke user: %s", err)
+				return nil, caerrors.NewHTTPErr(500, caerrors.ErrRevokeUpdateUser, "Failed to revoke user: %s", err)
 			}
 		}
 
 		var recs []CertRecord
 		recs, err = certDBAccessor.RevokeCertificatesByID(req.Name, reason)
 		if err != nil {
-			return nil, newHTTPErr(500, ErrNoCertsRevoked, "Failed to revoke certificates for '%s': %s",
+			return nil, caerrors.NewHTTPErr(500, caerrors.ErrNoCertsRevoked, "Failed to revoke certificates for '%s': %s",
 				req.Name, err)
 		}
 
@@ -162,7 +157,7 @@ func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
 			}
 		}
 	} else {
-		return nil, newHTTPErr(400, ErrMissingRevokeArgs, "Either Name or Serial and AKI are required for a revoke request")
+		return nil, caerrors.NewHTTPErr(400, caerrors.ErrMissingRevokeArgs, "Either Name or Serial and AKI are required for a revoke request")
 	}
 
 	log.Debugf("Revoke was successful: %+v", req)
@@ -176,4 +171,19 @@ func revokeHandler(ctx *serverRequestContext) (interface{}, error) {
 		result.CRL = util.B64Encode(crl)
 	}
 	return result, nil
+}
+
+func parseInput(input string) string {
+	return strings.Replace(strings.TrimLeft(strings.ToLower(input), "0"), ":", "", -1)
+}
+
+func checkAuth(callerName, revokeUserName string, ca *CA) error {
+	if callerName != revokeUserName {
+		// Make sure that the caller has the "hf.Revoker" attribute.
+		err := ca.attributeIsTrue(callerName, "hf.Revoker")
+		if err != nil {
+			return caerrors.NewAuthorizationErr(caerrors.ErrNotRevoker, "Caller does not have authority to revoke")
+		}
+	}
+	return nil
 }

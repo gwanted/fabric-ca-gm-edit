@@ -17,9 +17,10 @@ limitations under the License.
 package update
 
 import (
+	"bytes"
 	"fmt"
-	"reflect"
 
+	"github.com/golang/protobuf/proto"
 	cb "github.com/hyperledger/fabric/protos/common"
 )
 
@@ -38,7 +39,7 @@ func computePoliciesMapUpdate(original, updated map[string]*cb.ConfigPolicy) (re
 			continue
 		}
 
-		if originalPolicy.ModPolicy == updatedPolicy.ModPolicy && reflect.DeepEqual(originalPolicy.Policy, updatedPolicy.Policy) {
+		if originalPolicy.ModPolicy == updatedPolicy.ModPolicy && proto.Equal(originalPolicy.Policy, updatedPolicy.Policy) {
 			sameSet[policyName] = &cb.ConfigPolicy{
 				Version: originalPolicy.Version,
 			}
@@ -83,7 +84,7 @@ func computeValuesMapUpdate(original, updated map[string]*cb.ConfigValue) (readS
 			continue
 		}
 
-		if originalValue.ModPolicy == updatedValue.ModPolicy && reflect.DeepEqual(originalValue.Value, updatedValue.Value) {
+		if originalValue.ModPolicy == updatedValue.ModPolicy && bytes.Equal(originalValue.Value, updatedValue.Value) {
 			sameSet[valueName] = &cb.ConfigValue{
 				Version: originalValue.Version,
 			}
@@ -223,6 +224,14 @@ func computeGroupUpdate(original, updated *cb.ConfigGroup) (readSet, writeSet *c
 }
 
 func Compute(original, updated *cb.Config) (*cb.ConfigUpdate, error) {
+	if original.ChannelGroup == nil {
+		return nil, fmt.Errorf("no channel group included for original config")
+	}
+
+	if updated.ChannelGroup == nil {
+		return nil, fmt.Errorf("no channel group included for updated config")
+	}
+
 	readSet, writeSet, groupUpdated := computeGroupUpdate(original.ChannelGroup, updated.ChannelGroup)
 	if !groupUpdated {
 		return nil, fmt.Errorf("no differences detected between original and updated config")

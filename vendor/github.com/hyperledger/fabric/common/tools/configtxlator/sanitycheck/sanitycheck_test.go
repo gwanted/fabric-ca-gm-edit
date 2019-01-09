@@ -19,17 +19,16 @@ package sanitycheck
 import (
 	"testing"
 
-	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/factory"
+	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/hyperledger/fabric/common/cauthdsl"
-	"github.com/hyperledger/fabric/common/config"
-	"github.com/hyperledger/fabric/common/configtx"
-	genesisconfig "github.com/hyperledger/fabric/common/configtx/tool/localconfig"
-	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
+	"github.com/hyperledger/fabric/common/channelconfig"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/configtxgentest"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/encoder"
+	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
 	cb "github.com/hyperledger/fabric/protos/common"
 	mspprotos "github.com/hyperledger/fabric/protos/msp"
 	"github.com/hyperledger/fabric/protos/utils"
-
-	"github.com/golang/protobuf/proto"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -41,15 +40,17 @@ var (
 func init() {
 	factory.InitFactories(nil)
 
-	insecureConf := genesisconfig.Load(genesisconfig.SampleInsecureProfile)
-	insecureGB := provisional.New(insecureConf).GenesisBlockForChannel(provisional.TestChainID)
-	insecureCtx := utils.ExtractEnvelopeOrPanic(insecureGB, 0)
-	insecureConfig = configtx.UnmarshalConfigEnvelopeOrPanic(utils.UnmarshalPayloadOrPanic(insecureCtx.Payload).Data).Config
+	insecureChannelGroup, err := encoder.NewChannelGroup(configtxgentest.Load(genesisconfig.SampleInsecureSoloProfile))
+	if err != nil {
+		panic(err)
+	}
+	insecureConfig = &cb.Config{ChannelGroup: insecureChannelGroup}
 
-	singleMSPConf := genesisconfig.Load(genesisconfig.SampleSingleMSPSoloProfile)
-	singleMSPGB := provisional.New(singleMSPConf).GenesisBlockForChannel(provisional.TestChainID)
-	singleMSPCtx := utils.ExtractEnvelopeOrPanic(singleMSPGB, 0)
-	singleMSPConfig = configtx.UnmarshalConfigEnvelopeOrPanic(utils.UnmarshalPayloadOrPanic(singleMSPCtx.Payload).Data).Config
+	singleMSPChannelGroup, err := encoder.NewChannelGroup(configtxgentest.Load(genesisconfig.SampleSingleMSPSoloProfile))
+	if err != nil {
+		panic(err)
+	}
+	singleMSPConfig = &cb.Config{ChannelGroup: singleMSPChannelGroup}
 }
 
 func TestSimpleCheck(t *testing.T) {
@@ -75,7 +76,7 @@ func TestEmptyConfigCheck(t *testing.T) {
 func TestWrongMSPID(t *testing.T) {
 	localConfig := proto.Clone(insecureConfig).(*cb.Config)
 	policyName := "foo"
-	localConfig.ChannelGroup.Groups[config.OrdererGroupKey].Policies[policyName] = &cb.ConfigPolicy{
+	localConfig.ChannelGroup.Groups[channelconfig.OrdererGroupKey].Policies[policyName] = &cb.ConfigPolicy{
 		Policy: &cb.Policy{
 			Type:  int32(cb.Policy_SIGNATURE),
 			Value: utils.MarshalOrPanic(cauthdsl.SignedByMspAdmin("MissingOrg")),
@@ -86,7 +87,7 @@ func TestWrongMSPID(t *testing.T) {
 	assert.Empty(t, result.GeneralErrors)
 	assert.Empty(t, result.ElementErrors)
 	assert.Len(t, result.ElementWarnings, 1)
-	assert.Equal(t, ".groups."+config.OrdererGroupKey+".policies."+policyName, result.ElementWarnings[0].Path)
+	assert.Equal(t, ".groups."+channelconfig.OrdererGroupKey+".policies."+policyName, result.ElementWarnings[0].Path)
 }
 
 func TestCorruptRolePrincipal(t *testing.T) {

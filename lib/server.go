@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lib
@@ -19,7 +9,6 @@ package lib
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -33,17 +22,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/revoke"
 	"github.com/cloudflare/cfssl/signer"
 	gmux "github.com/gorilla/mux"
-	"github.com/tjfoc/fabric-ca-gm/lib/attr"
-	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
-	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
-	stls "github.com/tjfoc/fabric-ca-gm/lib/tls"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/lib/attr"
+	"github.com/hyperledger/fabric-ca/lib/caerrors"
+	calog "github.com/hyperledger/fabric-ca/lib/common/log"
+	"github.com/hyperledger/fabric-ca/lib/dbutil"
+	"github.com/hyperledger/fabric-ca/lib/metadata"
+	stls "github.com/hyperledger/fabric-ca/lib/tls"
+	"github.com/hyperledger/fabric-ca/util"
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 )
 
@@ -96,6 +86,10 @@ func (s *Server) Init(renew bool) (err error) {
 // init initializses the server leaving the DB open
 func (s *Server) init(renew bool) (err error) {
 	serverVersion := metadata.GetVersion()
+	err = calog.SetLogLevel(s.Config.LogLevel, s.Config.Debug)
+	if err != nil {
+		return err
+	}
 	log.Infof("Server Version: %s", serverVersion)
 	s.levels, err = metadata.GetLevels(serverVersion)
 	if err != nil {
@@ -206,8 +200,8 @@ func (s *Server) RegisterBootstrapUser(user, pass, affiliation string) error {
 		Affiliation:    affiliation,
 		MaxEnrollments: 0, // 0 means to use the server's max enrollment setting
 		Attrs: map[string]string{
-			attr.Roles:          allRoles,
-			attr.DelegateRoles:  allRoles,
+			attr.Roles:          "*",
+			attr.DelegateRoles:  "*",
 			attr.Revoker:        "true",
 			attr.IntermediateCA: "true",
 			attr.GenCRL:         "true",
@@ -242,11 +236,6 @@ func (s *Server) initConfig() (err error) {
 	if s.Config == nil {
 		s.Config = new(ServerConfig)
 	}
-	cfg := s.Config
-	// Set log level if debug is true
-	if cfg.Debug {
-		log.Level = log.LevelDebug
-	}
 	s.CA.server = s
 	s.CA.HomeDir = s.HomeDir
 	err = s.initMultiCAConfig()
@@ -256,6 +245,17 @@ func (s *Server) initConfig() (err error) {
 	revoke.SetCRLFetcher(s.fetchCRL)
 	// Make file names absolute
 	s.makeFileNamesAbsolute()
+
+	compModeStr := os.Getenv("FABRIC_CA_SERVER_COMPATIBILITY_MODE_V1_3")
+	if compModeStr == "" {
+		compModeStr = "true" // TODO: Change default to false once all clients have been updated to use the new authorization header
+	}
+
+	s.Config.CompMode1_3, err = strconv.ParseBool(compModeStr)
+	if err != nil {
+		return errors.WithMessage(err, "Invalid value for boolean environment variable 'FABRIC_CA_SERVER_COMPATIBILITY_MODE_V1_3'")
+	}
+
 	return nil
 }
 
@@ -264,6 +264,9 @@ func (s *Server) initMultiCAConfig() (err error) {
 	cfg := s.Config
 	if cfg.CAcount != 0 && len(cfg.CAfiles) > 0 {
 		return errors.New("The --cacount and --cafiles options are mutually exclusive")
+	}
+	if cfg.CAcfg.Intermediate.ParentServer.URL != "" && cfg.CAcount > 0 {
+		return errors.New("The --cacount option is not permissible for an intermediate server; use the --cafiles option instead")
 	}
 	cfg.CAfiles, err = util.NormalizeFileList(cfg.CAfiles, s.HomeDir)
 	if err != nil {
@@ -453,7 +456,7 @@ func (s *Server) GetCA(name string) (*CA, error) {
 	// Lookup the CA from the server
 	ca := s.caMap[name]
 	if ca == nil {
-		return nil, newHTTPErr(404, ErrCANotFound, "CA '%s' does not exist", name)
+		return nil, caerrors.NewHTTPErr(404, caerrors.ErrCANotFound, "CA '%s' does not exist", name)
 	}
 	return ca, nil
 }
@@ -464,6 +467,8 @@ func (s *Server) registerHandlers() {
 	s.registerHandler("cainfo", newCAInfoEndpoint(s))
 	s.registerHandler("register", newRegisterEndpoint(s))
 	s.registerHandler("enroll", newEnrollEndpoint(s))
+	s.registerHandler("idemix/credential", newIdemixEnrollEndpoint(s))
+	s.registerHandler("idemix/cri", newIdemixCRIEndpoint(s))
 	s.registerHandler("reenroll", newReenrollEndpoint(s))
 	s.registerHandler("revoke", newRevokeEndpoint(s))
 	s.registerHandler("tcert", newTCertEndpoint(s))
@@ -472,6 +477,7 @@ func (s *Server) registerHandlers() {
 	s.registerHandler("identities/{id}", newIdentitiesEndpoint(s))
 	s.registerHandler("affiliations", newAffiliationsStreamingEndpoint(s))
 	s.registerHandler("affiliations/{affiliation}", newAffiliationsEndpoint(s))
+	s.registerHandler("certificates", newCertificateEndpoint(s))
 }
 
 // Register a handler
@@ -514,6 +520,7 @@ func (s *Server) listenAndServe() (err error) {
 			if !util.FileExists(c.TLS.CertFile) {
 				return fmt.Errorf("File specified by 'tls.certfile' does not exist: %s", c.TLS.CertFile)
 			}
+			log.Debugf("TLS Certificate: %s, TLS Key: %s", c.TLS.CertFile, c.TLS.KeyFile)
 		} else if !util.FileExists(c.TLS.CertFile) {
 			// TLS key file is not specified, generate TLS key and cert if they are not already generated
 			err = s.autoGenerateTLSCertificateKey()
@@ -521,7 +528,6 @@ func (s *Server) listenAndServe() (err error) {
 				return fmt.Errorf("Failed to automatically generate TLS certificate and key: %s", err)
 			}
 		}
-		log.Debugf("TLS Certificate: %s, TLS Key: %s", c.TLS.CertFile, c.TLS.KeyFile)
 
 		cer, err := util.LoadX509KeyPair(c.TLS.CertFile, c.TLS.KeyFile, s.csp)
 		if err != nil {
@@ -553,6 +559,7 @@ func (s *Server) listenAndServe() (err error) {
 			ClientCAs:    certPool,
 			MinVersion:   tls.VersionTLS12,
 			MaxVersion:   tls.VersionTLS12,
+			CipherSuites: stls.DefaultCipherSuites,
 		}
 
 		listener, err = tls.Listen("tcp", addr, config)
@@ -682,7 +689,7 @@ func (s *Server) compareDN(existingCACertFile, newCACertFile string) error {
 
 	err = existingDN.equal(newDN)
 	if err != nil {
-		return errors.Wrapf(err, "Please modify CSR in %s and try adding CA again", newCACertFile)
+		return errors.Wrapf(err, "a CA already exists with the following subject distinguished name: %s", newDN.subject)
 	}
 	return nil
 }
@@ -708,23 +715,15 @@ func (s *Server) loadDNFromCertFile(certFile string) (*DN, error) {
 	if err != nil {
 		return nil, err
 	}
-	issuerDN, err := s.getDNFromCert(cert.Issuer, "/")
-	if err != nil {
-		return nil, err
-	}
-	subjectDN, err := s.getDNFromCert(cert.Subject, "/")
-	if err != nil {
-		return nil, err
-	}
 	distinguishedName := &DN{
-		issuer:  issuerDN,
-		subject: subjectDN,
+		issuer:  cert.Issuer.String(),
+		subject: cert.Subject.String(),
 	}
 	return distinguishedName, nil
 }
 
 func (s *Server) autoGenerateTLSCertificateKey() error {
-	log.Debug("TLS enabled but no certificate or key provided, automatically generate TLS credentials")
+	log.Debug("TLS enabled but either certificate or key file does not exist, automatically generating TLS credentials")
 
 	clientCfg := &ClientConfig{
 		CSP: s.CA.Config.CSP,
@@ -759,7 +758,15 @@ func (s *Server) autoGenerateTLSCertificateKey() error {
 	}
 
 	// Write the TLS certificate to the file system
-	ioutil.WriteFile(s.Config.TLS.CertFile, cert, 0644)
+	err = ioutil.WriteFile(s.Config.TLS.CertFile, cert, 0644)
+	if err != nil {
+		return fmt.Errorf("Failed to write TLS certificate: %s", err)
+	}
+
+	// If c.TLS.Keyfile is specified then print out the key file path. If key file is not provided, then key generation is
+	// handled by BCCSP then only print out cert file path
+	c := s.Config
+	log.Debugf("Generated TLS Certificate: %s", c.TLS.CertFile)
 
 	return nil
 }
@@ -773,47 +780,4 @@ func (dn *DN) equal(checkDN *DN) error {
 		}
 	}
 	return nil
-}
-
-func (s *Server) getDNFromCert(namespace pkix.Name, sep string) (string, error) {
-	subject := []string{}
-	for _, s := range namespace.ToRDNSequence() {
-		for _, i := range s {
-			if v, ok := i.Value.(string); ok {
-				if name, ok := oid[i.Type.String()]; ok {
-					// <oid name>=<value>
-					subject = append(subject, fmt.Sprintf("%s=%s", name, v))
-				} else {
-					// <oid>=<value> if no <oid name> is found
-					subject = append(subject, fmt.Sprintf("%s=%s", i.Type.String(), v))
-				}
-			} else {
-				// <oid>=<value in default format> if value is not string
-				subject = append(subject, fmt.Sprintf("%s=%v", i.Type.String(), v))
-			}
-		}
-	}
-	return sep + strings.Join(subject, sep), nil
-}
-
-var oid = map[string]string{
-	"2.5.4.3":                    "CN",
-	"2.5.4.4":                    "SN",
-	"2.5.4.5":                    "serialNumber",
-	"2.5.4.6":                    "C",
-	"2.5.4.7":                    "L",
-	"2.5.4.8":                    "ST",
-	"2.5.4.9":                    "streetAddress",
-	"2.5.4.10":                   "O",
-	"2.5.4.11":                   "OU",
-	"2.5.4.12":                   "title",
-	"2.5.4.17":                   "postalCode",
-	"2.5.4.42":                   "GN",
-	"2.5.4.43":                   "initials",
-	"2.5.4.44":                   "generationQualifier",
-	"2.5.4.46":                   "dnQualifier",
-	"2.5.4.65":                   "pseudonym",
-	"0.9.2342.19200300.100.1.25": "DC",
-	"1.2.840.113549.1.9.1":       "emailAddress",
-	"0.9.2342.19200300.100.1.1":  "userid",
 }

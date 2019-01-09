@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lib
@@ -20,11 +10,12 @@ import (
 	"time"
 
 	"github.com/cloudflare/cfssl/config"
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
-	"github.com/tjfoc/fabric-ca-gm/lib/ldap"
-	"github.com/tjfoc/fabric-ca-gm/lib/tls"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/dbutil"
+	"github.com/hyperledger/fabric-ca/lib/ldap"
+	"github.com/hyperledger/fabric-ca/lib/server/idemix"
+	"github.com/hyperledger/fabric-ca/lib/tls"
+	"github.com/hyperledger/fabric-ca/util"
 	"github.com/hyperledger/fabric/bccsp/factory"
 )
 
@@ -81,7 +72,7 @@ csr:
 )
 
 // CAConfig is the CA instance's config
-// The tags are recognized by the RegisterFlags function in fabric-ca/lib/util.go
+// The tags are recognized by the RegisterFlags function in fabric-ca/util/flag.go
 // and are as follows:
 // "def" - the default value of the field;
 // "opt" - the optional one character short name to use on the command line;
@@ -89,31 +80,33 @@ csr:
 // "skip" - to skip the field.
 type CAConfig struct {
 	Version      string `skip:"true"`
-	Cfg          cfgOptions
+	Cfg          CfgOptions
 	CA           CAInfo
-	Signing      *config.Signing
+	Signing      *config.Signing `skip:"true"`
 	CSR          api.CSRInfo
 	Registry     CAConfigRegistry
 	Affiliations map[string]interface{}
 	LDAP         ldap.Config
 	DB           CAConfigDB
-	CSP          *factory.FactoryOpts `mapstructure:"bccsp"`
+	CSP          *factory.FactoryOpts `mapstructure:"bccsp" hide:"true"`
 	// Optional client config for an intermediate server which acts as a client
 	// of the root (or parent) server
-	Client       *ClientConfig
+	Client       *ClientConfig `skip:"true"`
 	Intermediate IntermediateCA
 	CRL          CRLConfig
+	Idemix       idemix.Config
 }
 
-// cfgOptions is a CA configuration that allows for setting different options
-type cfgOptions struct {
+// CfgOptions is a CA configuration that allows for setting different options
+type CfgOptions struct {
 	Identities   identitiesOptions
 	Affiliations affiliationsOptions
 }
 
 // identitiesOptions are options that are related to identities
 type identitiesOptions struct {
-	AllowRemove bool `help:"Enables removal of identities dynamically"`
+	PasswordAttempts int  `def:"10" help:"Number of incorrect password attempts allowed"`
+	AllowRemove      bool `help:"Enables removal of identities dynamically"`
 }
 
 // affiliationsOptions are options that are related to affiliations
@@ -131,8 +124,8 @@ type CAInfo struct {
 
 // CAConfigDB is the database part of the server's config
 type CAConfigDB struct {
-	Type       string `def:"mysql" help:"Type of database; one of: sqlite3, postgres, mysql"`
-	Datasource string `def:"root:hello123@tcp(10.36.8.175:3306)/fabric_ca?parseTime=true" help:"Data source which is database specific"`
+	Type       string `def:"sqlite3" help:"Type of database; one of: sqlite3, postgres, mysql"`
+	Datasource string `def:"fabric-ca-server.db" help:"Data source which is database specific"`
 	TLS        tls.ClientTLSConfig
 }
 

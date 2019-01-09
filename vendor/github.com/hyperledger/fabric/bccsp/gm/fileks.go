@@ -26,11 +26,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/gmsm/sm2"
-	"github.com/tjfoc/gmsm/sm4"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/utils"
+	"github.com/tjfoc/gmsm/sm2"
+	"github.com/tjfoc/gmsm/sm4"
 )
 
 // NewFileBasedKeyStore instantiated a file-based key store at a given position.
@@ -132,7 +131,7 @@ func (ks *fileBasedKeyStore) GetKey(ski []byte) (k bccsp.Key, err error) {
 		if err != nil {
 			return nil, fmt.Errorf("Failed loading secret key [%x] [%s]", ski, err)
 		}
-		log.Debugf("aaaaaaaaaa key = %T", key)
+
 		switch key.(type) {
 		case *sm2.PrivateKey:
 			return &gmsm2PrivateKey{key.(*sm2.PrivateKey)}, nil
@@ -202,7 +201,6 @@ func (ks *fileBasedKeyStore) StoreKey(k bccsp.Key) (err error) {
 func (ks *fileBasedKeyStore) searchKeystoreForSKI(ski []byte) (k bccsp.Key, err error) {
 
 	files, _ := ioutil.ReadDir(ks.path)
-	log.Debugf("dam it ! %s", ks.path)
 	for _, f := range files {
 		if f.IsDir() {
 			continue
@@ -216,7 +214,7 @@ func (ks *fileBasedKeyStore) searchKeystoreForSKI(ski []byte) (k bccsp.Key, err 
 		if err != nil {
 			continue
 		}
-		log.Debugf("finally find key %T", key)
+
 		switch key.(type) {
 		case *sm2.PrivateKey:
 			k = &gmsm2PrivateKey{key.(*sm2.PrivateKey)}
@@ -230,7 +228,7 @@ func (ks *fileBasedKeyStore) searchKeystoreForSKI(ski []byte) (k bccsp.Key, err 
 
 		return k, nil
 	}
-	return nil, errors.New("Key type not recognized hahahahahahahah")
+	return nil, errors.New("Key type not recognized")
 }
 
 func (ks *fileBasedKeyStore) getSuffix(alias string) string {

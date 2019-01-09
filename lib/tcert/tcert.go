@@ -26,14 +26,13 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"fmt"
-	"time"
-
 	"math/big"
 	"strconv"
+	"time"
 
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/util"
 	"github.com/hyperledger/fabric/bccsp"
 	cspsigner "github.com/hyperledger/fabric/bccsp/signer"
 )

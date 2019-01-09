@@ -15,12 +15,9 @@ limitations under the License.
 */
 package factory
 
-// import "github.com/hyperledger/fabric/common/config"
-
 // GetDefaultOpts offers a default implementation for Opts
 // returns a new instance every time
 func GetDefaultOpts() *FactoryOpts {
-	// if config.CurrentCrypto == "GM" {
 	return &FactoryOpts{
 		ProviderName: "GM",
 		SwOpts: &SwOpts{
@@ -29,16 +26,6 @@ func GetDefaultOpts() *FactoryOpts {
 			Ephemeral:  true,
 		},
 	}
-	// }
-	// return &FactoryOpts{
-	// 	ProviderName: "SW",
-	// 	SwOpts: &SwOpts{
-	// 		HashFamily: "SHA2",
-	// 		SecLevel:   256,
-
-	// 		Ephemeral: true,
-	// 	},
-	// }
 }
 
 // FactoryName returns the name of the provider

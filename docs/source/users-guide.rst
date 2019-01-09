@@ -9,16 +9,13 @@ It provides features such as:
   * registration of identities, or connects to LDAP as the user
     registry
   * issuance of Enrollment Certificates (ECerts)
-  * issuance of Transaction Certificates (TCerts), providing both
-    anonymity and unlinkability when transacting on a Hyperledger Fabric
-    blockchain
   * certificate renewal and revocation
 
 Hyperledger Fabric CA consists of both a server and a client component as
 described later in this document.
 
 For developers interested in contributing to Hyperledger Fabric CA, see the
-`Fabric CA repository <https://github.com/tjfoc/gmca>`__ for more
+`Fabric CA repository <https://github.com/hyperledger/fabric-ca>`__ for more
 information.
 
 
@@ -35,14 +32,11 @@ Table of Contents
    2. `Install`_
    3. `Explore the Fabric CA CLI`_
 
-3. `File Formats`_
+3. `Configuration Settings`_
 
-   1. `Fabric CA server's configuration file format`_
-   2. `Fabric CA client's configuration file format`_
+   1. `A word on file paths`_
 
-4. `Configuration Settings Precedence`_
-
-5. `Fabric CA Server`_
+4. `Fabric CA Server`_
 
    1. `Initializing the server`_
    2. `Starting the server`_
@@ -51,16 +45,34 @@ Table of Contents
    5. `Setting up a cluster`_
    6. `Setting up multiple CAs`_
    7. `Enrolling an intermediate CA`_
+   8. `Upgrading the server`_
 
-6. `Fabric CA Client`_
+5. `Fabric CA Client`_
 
    1. `Enrolling the bootstrap identity`_
    2. `Registering a new identity`_
    3. `Enrolling a peer identity`_
-   4. `Reenrolling an identity`_
-   5. `Revoking a certificate or identity`_
-   6. `Enabling TLS`_
-   7. `Contact specific CA instance`_
+   4. `Getting Identity Mixer credential for a user`_
+   5. `Getting Idemix CRI`_
+   6. `Reenrolling an identity`_
+   7. `Revoking a certificate or identity`_
+   8. `Generating a CRL (Certificate Revocation List)`_
+   9. `Attribute-Based Access Control`_
+   10. `Dynamic Server Configuration Update`_
+   11. `Enabling TLS`_
+   12. `Contact specific CA instance`_
+
+6. `HSM`_
+
+   1. `Configuring Fabric CA server to use softhsm2`_
+
+7. `File Formats`_
+
+   1. `Fabric CA server's configuration file format`_
+   2. `Fabric CA client's configuration file format`_
+
+8. `Troubleshooting`_
+
 
 Overview
 --------
@@ -75,6 +87,7 @@ via the Hyperledger Fabric CA client or through one of the Fabric SDKs.
 All communication to the Hyperledger Fabric CA server is via REST APIs.
 See `fabric-ca/swagger/swagger-fabric-ca.json` for the swagger documentation
 for these REST APIs.
+You may view this documentation via the http://editor2.swagger.io online editor.
 
 The Hyperledger Fabric CA client or SDK may connect to a server in a cluster
 of Hyperledger Fabric CA servers.   This is illustrated in the top right section
@@ -95,7 +108,7 @@ Getting Started
 Prerequisites
 ~~~~~~~~~~~~~~~
 
--  Go 1.7.x installation
+-  Go 1.10+ installation
 -  ``GOPATH`` environment variable is set correctly
 - libtool and libtdhl-dev packages are installed
 
@@ -126,7 +139,7 @@ in $GOPATH/bin.
 
 .. code:: bash
 
-    go get -u github.com/tjfoc/gmca/cmd/...
+    go get -u github.com/hyperledger/fabric-ca/cmd/...
 
 Note: If you have already cloned the fabric-ca repository, make sure you are on the
 master branch before running the 'go get' command above. Otherwise, you might see the
@@ -134,7 +147,7 @@ following error:
 
 ::
 
-    <gopath>/src/github.com/tjfoc/gmca; git pull --ff-only
+    <gopath>/src/github.com/hyperledger/fabric-ca; git pull --ff-only
     There is no tracking information for the current branch.
     Please specify which branch you want to merge with.
     See git-pull(1) for details.
@@ -145,7 +158,7 @@ following error:
 
         git branch --set-upstream-to=<remote>/<branch> tlsdoc
 
-    package github.com/tjfoc/fabric-ca-gm/cmd/fabric-ca-client: exit status 1
+    package github.com/hyperledger/fabric-ca/cmd/fabric-ca-client: exit status 1
 
 Start Server Natively
 ~~~~~~~~~~~~~~~~~~~~~
@@ -169,12 +182,12 @@ Start Server via Docker
 Docker Hub
 ^^^^^^^^^^^^
 
-Go to: https://hub.docker.com/r/tjfoc/gmca/tags/
+Go to: https://hub.docker.com/r/hyperledger/fabric-ca/tags/
 
 Find the tag that matches the architecture and version of fabric-ca
 that you want to pull.
 
-Navigate to `$GOPATH/src/github.com/tjfoc/gmca/docker/server`
+Navigate to `$GOPATH/src/github.com/hyperledger/fabric-ca/docker/server`
 and open up docker-compose.yml in an editor.
 
 Change the `image` line to reflect the tag you found previously. The file
@@ -183,14 +196,14 @@ may look like this for an x86 architecture for version beta.
 .. code:: yaml
 
     fabric-ca-server:
-      image: tjfoc/gmca:x86_64-1.0.0-beta
+      image: hyperledger/fabric-ca:x86_64-1.0.0-beta
       container_name: fabric-ca-server
       ports:
         - "7054:7054"
       environment:
-        - FABRIC_CA_HOME=/etc/tjfoc/gmca-server
+        - FABRIC_CA_HOME=/etc/hyperledger/fabric-ca-server
       volumes:
-        - "./fabric-ca-server:/etc/tjfoc/gmca-server"
+        - "./fabric-ca-server:/etc/hyperledger/fabric-ca-server"
       command: sh -c 'fabric-ca-server start -b admin:adminpw'
 
 Open up a terminal in the same directory as the docker-compose.yml file
@@ -211,17 +224,17 @@ You can build and start the server via docker-compose as shown below.
 
 .. code:: bash
 
-    cd $GOPATH/src/github.com/tjfoc/gmca
+    cd $GOPATH/src/github.com/hyperledger/fabric-ca
     make docker
     cd docker/server
     docker-compose up -d
 
-The tjfoc/gmca docker image contains both the fabric-ca-server and
+The hyperledger/fabric-ca docker image contains both the fabric-ca-server and
 the fabric-ca-client.
 
 .. code:: bash
 
-    # cd $GOPATH/src/github.com/tjfoc/gmca
+    # cd $GOPATH/src/github.com/hyperledger/fabric-ca
     # FABRIC_CA_DYNAMIC_LINK=true make docker
     # cd docker/server
     # docker-compose up -d
@@ -232,106 +245,8 @@ Explore the Fabric CA CLI
 This section simply provides the usage messages for the Fabric CA server and client
 for convenience.  Additional usage information is provided in following sections.
 
-The following shows the Fabric CA server usage message.
-
-.. code:: bash
-
-    fabric-ca-server --help
-    Hyperledger Fabric Certificate Authority Server
-
-    Usage:
-      fabric-ca-server [command]
-
-    Available Commands:
-      init        Initialize the Fabric CA server
-      start       Start the Fabric CA server
-
-    Flags:
-      --address string                            Listening address of fabric-ca-server (default "0.0.0.0")
-  -b, --boot string                               The user:pass for bootstrap admin which is required to build default config file
-      --ca.certfile string                        PEM-encoded CA certificate file (default "ca-cert.pem")
-      --ca.chainfile string                       PEM-encoded CA chain file (default "ca-chain.pem")
-      --ca.keyfile string                         PEM-encoded CA key file (default "ca-key.pem")
-  -n, --ca.name string                            Certificate Authority name
-      --cacount int                               Number of non-default CA instances
-      --cafiles stringSlice                       A list of comma-separated CA configuration files
-  -c, --config string                             Configuration file (default "fabric-ca-server-config.yaml")
-      --crlsizelimit int                          Size limit of an acceptable CRL in bytes (default 512000)
-      --csr.cn string                             The common name field of the certificate signing request to a parent fabric-ca-server
-      --csr.hosts stringSlice                     A list of comma-separated host names in a certificate signing request to a parent fabric-ca-server
-      --db.datasource string                      Data source which is database specific (default "fabric-ca-server.db")
-      --db.tls.certfiles stringSlice              A list of comma-separated PEM-encoded trusted certificate files (e.g. root1.pem,root2.pem)
-      --db.tls.client.certfile string             PEM-encoded certificate file when mutual authenticate is enabled
-      --db.tls.client.keyfile string              PEM-encoded key file when mutual authentication is enabled
-      --db.type string                            Type of database; one of: sqlite3, postgres, mysql (default "sqlite3")
-  -d, --debug                                     Enable debug level logging
-      --intermediate.enrollment.label string      Label to use in HSM operations
-      --intermediate.enrollment.profile string    Name of the signing profile to use in issuing the certificate
-      --intermediate.parentserver.caname string   Name of the CA to connect to on fabric-ca-serve
-  -u, --intermediate.parentserver.url string      URL of the parent fabric-ca-server (e.g. http://<username>:<password>@<address>:<port)
-      --intermediate.tls.certfiles stringSlice    A list of comma-separated PEM-encoded trusted certificate files (e.g. root1.pem,root2.pem)
-      --intermediate.tls.client.certfile string   PEM-encoded certificate file when mutual authenticate is enabled
-      --intermediate.tls.client.keyfile string    PEM-encoded key file when mutual authentication is enabled
-      --ldap.enabled                              Enable the LDAP client for authentication and attributes
-      --ldap.groupfilter string                   The LDAP group filter for a single affiliation group (default "(memberUid=%s)")
-      --ldap.tls.certfiles stringSlice            A list of comma-separated PEM-encoded trusted certificate files (e.g. root1.pem,root2.pem)
-      --ldap.tls.client.certfile string           PEM-encoded certificate file when mutual authenticate is enabled
-      --ldap.tls.client.keyfile string            PEM-encoded key file when mutual authentication is enabled
-      --ldap.url string                           LDAP client URL of form ldap://adminDN:adminPassword@host[:port]/base
-      --ldap.userfilter string                    The LDAP user filter to use when searching for users (default "(uid=%s)")
-  -p, --port int                                  Listening port of fabric-ca-server (default 7054)
-      --registry.maxenrollments int               Maximum number of enrollments; valid if LDAP not enabled
-      --tls.certfile string                       PEM-encoded TLS certificate file for server's listening port (default "ca-cert.pem")
-      --tls.clientauth.certfiles stringSlice      A list of comma-separated PEM-encoded trusted certificate files (e.g. root1.pem,root2.pem)
-      --tls.clientauth.type string                Policy the server will follow for TLS Client Authentication. (default "noclientcert")
-      --tls.enabled                               Enable TLS on the listening port
-      --tls.keyfile string                        PEM-encoded TLS key for server's listening port (default "ca-key.pem")
-
-    Use "fabric-ca-server [command] --help" for more information about a command.
-
-The following shows the Fabric CA client usage message:
-
-.. code:: bash
-
-    fabric-ca-client --help
-    Hyperledger Fabric Certificate Authority Client
-
-    Usage:
-      fabric-ca-client [command]
-
-    Available Commands:
-      enroll      Enroll an identity
-      getcacert   Get CA certificate chain
-      reenroll    Reenroll an identity
-      register    Register an identity
-      revoke      Revoke an identity
-
-    Flags:
-      --caname string                Name of CA
-  -c, --config string                Configuration file (default "/Users/saadkarim/.fabric-ca-client/fabric-ca-client-config.yaml")
-      --csr.hosts stringSlice        A list of comma-separated host names in a certificate signing request
-      --csr.serialnumber string      The serial number in a certificate signing request, which becomes part of the DN (Distinquished Name)
-  -d, --debug                        Enable debug level logging
-      --enrollment.label string      Label to use in HSM operations
-      --enrollment.profile string    Name of the signing profile to use in issuing the certificate
-      --id.affiliation string        The identity's affiliation
-      --id.attrs stringSlice         A list of comma-separated attributes of the form <name>=<value> (e.g. foo=foo1,bar=bar1)
-      --id.maxenrollments int        The maximum number of times the secret can be reused to enroll.
-      --id.name string               Unique name of the identity
-      --id.secret string             The enrollment secret for the identity being registered
-      --id.type string               Type of identity being registered (e.g. 'peer, app, user')
-  -M, --mspdir string                Membership Service Provider directory (default "msp")
-  -m, --myhost string                Hostname to include in the certificate signing request during enrollment (default "saads-mbp.raleigh.ibm.com")
-  -a, --revoke.aki string            AKI (Authority Key Identifier) of the certificate to be revoked
-  -e, --revoke.name string           Identity whose certificates should be revoked
-  -r, --revoke.reason string         Reason for revocation
-  -s, --revoke.serial string         Serial number of the certificate to be revoked
-      --tls.certfiles stringSlice    A list of comma-separated PEM-encoded trusted certificate files (e.g. root1.pem,root2.pem)
-      --tls.client.certfile string   PEM-encoded certificate file when mutual authenticate is enabled
-      --tls.client.keyfile string    PEM-encoded key file when mutual authentication is enabled
-  -u, --url string                   URL of fabric-ca-server (default "http://localhost:7054")
-
-    Use "fabric-ca-client [command] --help" for more information about a command.
+The following links shows the :doc:`Server Command Line <servercli>` and
+:doc:`Client Command Line <clientcli>`.
 
 .. note:: Note that command line options that are string slices (lists) can be
           specified either by specifying the option with comma-separated list
@@ -344,371 +259,8 @@ The following shows the Fabric CA client usage message:
 
 `Back to Top`_
 
-File Formats
-------------
-
-Fabric CA server's configuration file format
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A default configuration file (like the one shown below) is created in
-the server's home directory (see `Fabric CA Server <#server>`__ section more info).
-
-.. code:: yaml
-
-    # Server's listening port (default: 7054)
-    port: 7054
-
-    # Enables debug logging (default: false)
-    debug: false
-
-    # Size limit of an acceptable CRL in bytes (default: 512000)
-    crlsizelimit: 512000
-
-    #############################################################################
-    #  TLS section for the server's listening port
-    #
-    #  The following types are supported for client authentication: NoClientCert,
-    #  RequestClientCert, RequireAnyClientCert, VerifyClientCertIfGiven,
-    #  and RequireAndVerifyClientCert.
-    #
-    #  Certfiles is a list of root certificate authorities that the server uses
-    #  when verifying client certificates.
-    #############################################################################
-    tls:
-      # Enable TLS (default: false)
-      enabled: false
-      # TLS for the server's listening port
-      certfile: ca-cert.pem
-      keyfile: ca-key.pem
-      clientauth:
-        type: noclientcert
-        certfiles:
-
-    #############################################################################
-    #  The CA section contains information related to the Certificate Authority
-    #  including the name of the CA, which should be unique for all members
-    #  of a blockchain network.  It also includes the key and certificate files
-    #  used when issuing enrollment certificates (ECerts) and transaction
-    #  certificates (TCerts).
-    #  The chainfile (if it exists) contains the certificate chain which
-    #  should be trusted for this CA, where the 1st in the chain is always the
-    #  root CA certificate.
-    #############################################################################
-    ca:
-      # Name of this CA
-      name:
-      # Key file (default: ca-key.pem)
-      keyfile: ca-key.pem
-      # Certificate file (default: ca-cert.pem)
-      certfile: ca-cert.pem
-      # Chain file (default: chain-cert.pem)
-      chainfile: ca-chain.pem
-
-    #############################################################################
-    #  The registry section controls how the fabric-ca-server does two things:
-    #  1) authenticates enrollment requests which contain a username and password
-    #     (also known as an enrollment ID and secret).
-    #  2) once authenticated, retrieves the identity's attribute names and
-    #     values which the fabric-ca-server optionally puts into TCerts
-    #     which it issues for transacting on the Hyperledger Fabric blockchain.
-    #     These attributes are useful for making access control decisions in
-    #     chaincode.
-    #  There are two main configuration options:
-    #  1) The fabric-ca-server is the registry
-    #  2) An LDAP server is the registry, in which case the fabric-ca-server
-    #     calls the LDAP server to perform these tasks.
-    #############################################################################
-    registry:
-      # Maximum number of times a password/secret can be reused for enrollment
-      # (default: -1, which means there is no limit)
-      maxenrollments: -1
-
-      # Contains identity information which is used when LDAP is disabled
-      identities:
-         - name: <<<ADMIN>>>
-           pass: <<<ADMINPW>>>
-           type: client
-           affiliation: ""
-           maxenrollments: -1
-           attrs:
-              hf.Registrar.Roles: "client,user,peer,validator,auditor"
-              hf.Registrar.DelegateRoles: "client,user,validator,auditor"
-              hf.Revoker: true
-              hf.IntermediateCA: true
-
-    #############################################################################
-    #  Database section
-    #  Supported types are: "sqlite3", "postgres", and "mysql".
-    #  The datasource value depends on the type.
-    #  If the type is "sqlite3", the datasource value is a file name to use
-    #  as the database store.  Since "sqlite3" is an embedded database, it
-    #  may not be used if you want to run the fabric-ca-server in a cluster.
-    #  To run the fabric-ca-server in a cluster, you must choose "postgres"
-    #  or "mysql".
-    #############################################################################
-    db:
-      type: sqlite3
-      datasource: fabric-ca-server.db
-      tls:
-          enabled: false
-          certfiles:
-            - db-server-cert.pem
-          client:
-            certfile: db-client-cert.pem
-            keyfile: db-client-key.pem
-
-    #############################################################################
-    #  LDAP section
-    #  If LDAP is enabled, the fabric-ca-server calls LDAP to:
-    #  1) authenticate enrollment ID and secret (i.e. username and password)
-    #     for enrollment requests;
-    #  2) To retrieve identity attributes
-    #############################################################################
-    ldap:
-       # Enables or disables the LDAP client (default: false)
-       enabled: false
-       # The URL of the LDAP server
-       url: ldap://<adminDN>:<adminPassword>@<host>:<port>/<base>
-       tls:
-          certfiles:
-            - ldap-server-cert.pem
-          client:
-             certfile: ldap-client-cert.pem
-             keyfile: ldap-client-key.pem
-
-    #############################################################################
-    #  Affiliation section
-    #############################################################################
-    affiliations:
-       org1:
-          - department1
-          - department2
-       org2:
-          - department1
-
-    #############################################################################
-    #  Signing section
-    #
-    #  The "default" subsection is used to sign enrollment certificates;
-    #  the default expiration ("expiry" field) is "8760h", which is 1 year in hours.
-    #
-    #  The "ca" profile subsection is used to sign intermediate CA certificates;
-    #  the default expiration ("expiry" field) is "43800h" which is 5 years in hours.
-    #  Note that "isca" is true, meaning that it issues a CA certificate.
-    #  A maxpathlen of 0 means that the intermediate CA cannot issue other
-    #  intermediate CA certificates, though it can still issue end entity certificates.
-    #  (See RFC 5280, section 4.2.1.9)
-    #############################################################################
-    signing:
-        default:
-          usage:
-            - cert sign
-          expiry: 8760h
-        profiles:
-          ca:
-             usage:
-               - cert sign
-             expiry: 43800h
-             caconstraint:
-               isca: true
-               maxpathlen: 0
-
-    ###########################################################################
-    #  Certificate Signing Request (CSR) section.
-    #  This controls the creation of the root CA certificate.
-    #  The expiration for the root CA certificate is configured with the
-    #  "ca.expiry" field below, whose default value is "131400h" which is
-    #  15 years in hours.
-    #  The pathlength field is used to limit CA certificate hierarchy as described
-    #  in section 4.2.1.9 of RFC 5280.
-    #  Examples:
-    #  1) No pathlength value means no limit is requested.
-    #  2) pathlength == 1 means a limit of 1 is requested which is the default for
-    #     a root CA.  This means the root CA can issue intermediate CA certificates,
-    #     but these intermediate CAs may not in turn issue other CA certificates
-    #     though they can still issue end entity certificates.
-    #  3) pathlength == 0 means a limit of 0 is requested;
-    #     this is the default for an intermediate CA, which means it can not issue
-    #     CA certificates though it can still issue end entity certificates.
-    ###########################################################################
-    csr:
-       cn: <<<COMMONNAME>>>
-       names:
-          - C: US
-            ST: "North Carolina"
-            L:
-            O: Hyperledger
-            OU: Fabric
-       hosts:
-         - <<<MYHOST>>>
-         - localhost
-       ca:
-          expiry: 131400h
-          pathlength: <<<PATHLENGTH>>>
-
-    #############################################################################
-    # BCCSP (BlockChain Crypto Service Provider) section is used to select which
-    # crypto library implementation to use
-    #############################################################################
-    bccsp:
-        default: SW
-        sw:
-            hash: SHA2
-            security: 256
-            filekeystore:
-                # The directory used for the software file-based keystore
-                keystore: msp/keystore
-
-    #############################################################################
-    # Multi CA section
-    #
-    # Each Fabric CA server contains one CA by default.  This section is used
-    # to configure multiple CAs in a single server.
-    #
-    # 1) --cacount <number-of-CAs>
-    # Automatically generate <number-of-CAs> non-default CAs.  The names of these
-    # additional CAs are "ca1", "ca2", ... "caN", where "N" is <number-of-CAs>
-    # This is particularly useful in a development environment to quickly set up
-    # multiple CAs.
-    #
-    # 2) --cafiles <CA-config-files>
-    # For each CA config file in the list, generate a separate signing CA.  Each CA
-    # config file in this list MAY contain all of the same elements as are found in
-    # the server config file except port, debug, and tls sections.
-    #
-    # Examples:
-    # fabric-ca-server start -b admin:adminpw --cacount 2
-    #
-    # fabric-ca-server start -b admin:adminpw --cafiles ca/ca1/fabric-ca-server-config.yaml
-    # --cafiles ca/ca2/fabric-ca-server-config.yaml
-    #
-    #############################################################################
-
-    cacount:
-
-    cafiles:
-
-    #############################################################################
-    # Intermediate CA section
-    #
-    # The relationship between servers and CAs is as follows:
-    #   1) A single server process may contain or function as one or more CAs.
-    #      This is configured by the "Multi CA section" above.
-    #   2) Each CA is either a root CA or an intermediate CA.
-    #   3) Each intermediate CA has a parent CA which is either a root CA or another intermediate CA.
-    #
-    # This section pertains to configuration of #2 and #3.
-    # If the "intermediate.parentserver.url" property is set,
-    # then this is an intermediate CA with the specified parent
-    # CA.
-    #
-    # parentserver section
-    #    url - The URL of the parent server
-    #    caname - Name of the CA to enroll within the server
-    #
-    # enrollment section used to enroll intermediate CA with parent CA
-    #    profile - Name of the signing profile to use in issuing the certificate
-    #    label - Label to use in HSM operations
-    #
-    # tls section for secure socket connection
-    #   certfiles - PEM-encoded list of trusted root certificate files
-    #   client:
-    #     certfile - PEM-encoded certificate file for when client authentication
-    #     is enabled on server
-    #     keyfile - PEM-encoded key file for when client authentication
-    #     is enabled on server
-    #############################################################################
-    intermediate:
-      parentserver:
-        url:
-        caname:
-
-      enrollment:
-        hosts:
-        profile:
-        label:
-
-      tls:
-        certfiles:
-        client:
-          certfile:
-          keyfile:
-
-Fabric CA client's configuration file format
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A default configuration file (like the one shown below) is created in
-the client's home directory (see `Fabric CA Client <#client>`__ section more info).
-
-.. code:: yaml
-
-    #############################################################################
-    # Client Configuration
-    #############################################################################
-
-    # URL of the Fabric CA server (default: http://localhost:7054)
-    URL: http://localhost:7054
-
-    # Membership Service Provider (MSP) directory
-    # When the client is used to enroll a peer or an orderer, this field must be
-    # set to the MSP directory of the peer/orderer
-    MSPDir:
-
-    #############################################################################
-    #    TLS section for secure socket connection
-    #############################################################################
-    tls:
-      # Enable TLS (default: false)
-      enabled: false
-      certfiles:
-      client:
-        certfile:
-        keyfile:
-
-    #############################################################################
-    #  Certificate Signing Request section for generating the CSR for
-    #  an enrollment certificate (ECert)
-    #############################################################################
-    csr:
-      cn: <<<ENROLLMENT_ID>>>
-      names:
-        - C: US
-          ST: North Carolina
-          L:
-          O: Hyperledger
-          OU: Fabric
-      hosts:
-       - <<<MYHOST>>>
-      ca:
-        pathlen:
-        pathlenzero:
-        expiry:
-
-    #############################################################################
-    #  Registration section used to register a new identity with Fabric CA server
-    #############################################################################
-    id:
-      name:
-      type:
-      affiliation:
-      attributes:
-        - name:
-          value:
-
-    #############################################################################
-    #  Enrollment section used to enroll an identity with Fabric CA server
-    #############################################################################
-    enrollment:
-      profile:
-      label:
-
-    # Name of the CA to connect to within the fabric-ca server
-    caname:
-
-`Back to Top`_
-
-Configuration Settings Precedence
----------------------------------
+Configuration Settings
+~~~~~~~~~~~~~~~~~~~~~~
 
 The Fabric CA provides 3 ways to configure settings on the Fabric CA server
 and client. The precedence order is:
@@ -755,9 +307,8 @@ The same approach applies to fabric-ca-server, except instead of using
 
 .. _server:
 
-
 A word on file paths
---------------------
+^^^^^^^^^^^^^^^^^^^^^
 All the properties in the Fabric CA server and client configuration file
 that specify file names support both relative and absolute paths.
 Relative paths are relative to the config directory, where the
@@ -777,6 +328,8 @@ directory, ``cert.pem`` file in the ``~/config/certs`` directory and the
         certfile: certs/cert.pem
         keyfile: /abs/path/key.pem
 
+`Back to Top`_
+
 
 
 Fabric CA Server
@@ -789,7 +342,8 @@ opportunity for you to generate a default configuration file that can be
 reviewed and customized before starting the server.
 
 The Fabric CA server's home directory is determined as follows:
-  - if the ``FABRIC_CA_SERVER_HOME`` environment variable is set, use
+  - if the --home command line option is set, use its value
+  - otherwise, if the ``FABRIC_CA_SERVER_HOME`` environment variable is set, use
     its value
   - otherwise, if ``FABRIC_CA_HOME`` environment variable is set, use
     its value
@@ -853,7 +407,7 @@ The fields are as follows:
   -  **C** is the country
 
 If custom values for the CSR are required, you may customize the configuration
-file, delete the files specified by the ``ca.certfile`` and ``ca-keyfile``
+file, delete the files specified by the ``ca.certfile`` and ``ca.keyfile``
 configuration items, and then run the ``fabric-ca-server init -b admin:adminpw``
 command again.
 
@@ -926,6 +480,10 @@ name and password for a bootstrap identity.
 To cause the Fabric CA server to listen on ``https`` rather than
 ``http``, set ``tls.enabled`` to ``true``.
 
+SECURITY WARNING: The Fabric CA server should always be started with TLS
+enabled (``tls.enabled`` set to true). Failure to do so leaves the
+server vulnerable to an attacker with access to network traffic.
+
 To limit the number of times that the same secret (or password) can be
 used for enrollment, set the ``registry.maxenrollments`` in the configuration
 file to the appropriate value. If you set the value to 1, the Fabric CA
@@ -933,7 +491,7 @@ server allows passwords to only be used once for a particular enrollment
 ID. If you set the value to -1, the Fabric CA server places no limit on
 the number of times that a secret can be reused for enrollment. The
 default value is -1. Setting the value to 0, the Fabric CA server will
-disable enrollment for all identitiies and registeration of identities will
+disable enrollment for all identities and registration of identities will
 not be allowed.
 
 The Fabric CA server should now be listening on port 7054.
@@ -956,7 +514,7 @@ MySQL as described below. Fabric CA supports the following database
 versions in a cluster setup:
 
 - PostgreSQL: 9.5.5 or later
-- MySQL: 5.17.16 or later
+- MySQL: 5.7 or later
 
 PostgreSQL
 ^^^^^^^^^^
@@ -1084,19 +642,6 @@ being used.
 
 https://dev.mysql.com/doc/refman/5.7/en/sql-mode.html
 
-On MySQL 5.7.X, certain modes affect whether the server permits '0000-00-00' as a valid date.
-It might be necessary to relax the modes that MySQL server uses. We want to allow
-the server to be able to accept zero date values.
-
-In my.cnf, find the configuration option *sql_mode* and remove *NO_ZERO_DATE* if present.
-Restart MySQL server after making this change.
-
-Please refer to the following MySQL documentation on different modes available
-and select the appropriate settings for the specific version of MySQL that is
-being used.
-
-https://dev.mysql.com/doc/refman/5.7/en/sql-mode.html
-
 .. code:: yaml
 
     db:
@@ -1188,7 +733,45 @@ server to connect to an LDAP server.
        enabled: false
        # The URL of the LDAP server
        url: <scheme>://<adminDN>:<adminPassword>@<host>:<port>/<base>
-       userfilter: filter
+       userfilter: <filter>
+       attribute:
+          # 'names' is an array of strings that identify the specific attributes
+          # which are requested from the LDAP server.
+          names: <LDAPAttrs>
+          # The 'converters' section is used to convert LDAP attribute values
+          # to fabric CA attribute values.
+          #
+          # For example, the following converts an LDAP 'uid' attribute
+          # whose value begins with 'revoker' to a fabric CA attribute
+          # named "hf.Revoker" with a value of "true" (because the expression
+          # evaluates to true).
+          #    converters:
+          #       - name: hf.Revoker
+          #         value: attr("uid") =~ "revoker*"
+          #
+          # As another example, assume a user has an LDAP attribute named
+          # 'member' which has multiple values of "dn1", "dn2", and "dn3".
+          # Further assume the following configuration.
+          #    converters:
+          #       - name: myAttr
+          #         value: map(attr("member"),"groups")
+          #    maps:
+          #       groups:
+          #          - name: dn1
+          #            value: orderer
+          #          - name: dn2
+          #            value: peer
+          # The value of the user's 'myAttr' attribute is then computed to be
+          # "orderer,peer,dn3".  This is because the value of 'attr("member")' is
+          # "dn1,dn2,dn3", and the call to 'map' with a 2nd argument of
+          # "group" replaces "dn1" with "orderer" and "dn2" with "peer".
+          converters:
+            - name: <fcaAttrName>
+              value: <fcaExpr>
+          maps:
+            <mapName>:
+                - name: <from>
+                  value: <to>
 
 Where:
 
@@ -1200,12 +783,68 @@ Where:
     and 636 for *ldaps*;
   * ``base`` is the optional root of the LDAP tree to use for searches;
   * ``filter`` is a filter to use when searching to convert a login
-    user name to a distinquished name. For example, a value of
+    user name to a distinguished name. For example, a value of
     ``(uid=%s)`` searches for LDAP entries with the value of a ``uid``
     attribute whose value is the login user name. Similarly,
     ``(email=%s)`` may be used to login with an email address.
+  * ``LDAPAttrs`` is an array of LDAP attribute names to request from the
+    LDAP server on a user's behalf;
+  * the attribute.converters section is used to convert LDAP attributes to fabric
+    CA attributes, where
+    * ``fcaAttrName`` is the name of a fabric CA attribute;
+    * ``fcaExpr`` is an expression whose evaluated value is assigned to the fabric CA attribute.
+    For example, suppose that <LDAPAttrs> is ["uid"], <fcaAttrName> is 'hf.Revoker',
+    and <fcaExpr> is 'attr("uid") =~ "revoker*"'.  This means that an attribute
+    named "uid" is requested from the LDAP server on a user's behalf.  The user is
+    then given a value of 'true' for the 'hf.Revoker' attribute if the value of
+    the user's 'uid' LDAP attribute begins with 'revoker'; otherwise, the user
+    is given a value of 'false' for the 'hf.Revoker' attribute.
+  * the attribute.maps section is used to map LDAP response values.  The typical
+    use case is to map a distinguished name associated with an LDAP group to an
+    identity type.
 
-The following is a sample configuration section for the default settings
+The LDAP expression language uses the govaluate package as described at
+https://github.com/Knetic/govaluate/blob/master/MANUAL.md.  This defines
+operators such as "=~" and literals such as "revoker*", which is a regular
+expression.  The LDAP-specific variables and functions which extend the
+base govaluate language are as follows:
+
+  * ``DN`` is a variable equal to the user's distinguished name.
+  * ``affiliation`` is a variable equal to the user's affiliation.
+  * ``attr`` is a function which takes 1 or 2 arguments.  The 1st argument
+    is an LDAP attribute name.  The 2nd argument is a separator string which is
+    used to join multiple values into a single string; the default separator
+    string is ",". The ``attr`` function always returns a value of type
+    'string'.
+  * ``map`` is a function which takes 2 arguments.  The 1st argument
+    is any string.  The second argument is the name of a map which is used to
+    perform string substitution on the string from the 1st argument.
+  * ``if`` is a function which takes a 3 arguments where the first argument
+    must resolve to a boolean value.  If it evaluates to true, the second
+    argument is returned; otherwise, the third argument is returned.
+
+For example, the following expression evaluates to true if the user has
+a distinguished name ending in "O=org1,C=US", or if the user has an affiliation
+beginning with "org1.dept2." and also has the "admin" attribute of "true".
+
+  **DN =~ "*O=org1,C=US" || (affiliation =~ "org1.dept2.*" && attr('admin') = 'true')**
+
+NOTE: Since the ``attr`` function always returns a value of type 'string',
+numeric operators may not be used to construct expressions.
+For example, the following is NOT a valid expression:
+
+.. code:: yaml
+
+     value: attr("gidNumber) >= 10000 && attr("gidNumber) < 10006
+
+Alternatively, a regular expression enclosed in quotes as shown below may be used
+to return an equivalent result:
+
+.. code:: yaml
+
+     value: attr("gidNumber") =~ "1000[0-5]$" || attr("mail") == "root@example.com"
+
+The following is a sample configuration section for the default setting
 for the OpenLDAP server whose docker image is at
 ``https://github.com/osixia/docker-openldap``.
 
@@ -1227,24 +866,11 @@ When LDAP is configured, enrollment works as follows:
 -  The Fabric CA client or client SDK sends an enrollment request with a
    basic authorization header.
 -  The Fabric CA server receives the enrollment request, decodes the
-   identity name and password in the authorization header, looks up the DN (Distinquished
+   identity name and password in the authorization header, looks up the DN (Distinguished
    Name) associated with the identity name using the "userfilter" from the
    configuration file, and then attempts an LDAP bind with the identity's
    password. If the LDAP bind is successful, the enrollment processing is
    authorized and can proceed.
-
-When LDAP is configured, attribute retrieval works as follows:
-
-
--  A client SDK sends a request for a batch of tcerts **with one or more
-   attributes** to the Fabric CA server.
--  The Fabric CA server receives the tcert request and does as follows:
-
-   -  extracts the enrollment ID from the token in the authorization
-      header (after validating the token);
-   -  does an LDAP search/query to the LDAP server, requesting all of
-      the attribute names received in the tcert request;
-   -  the attribute values are placed in the tcert as normal.
 
 Setting up a cluster
 ~~~~~~~~~~~~~~~~~~~~
@@ -1307,7 +933,7 @@ For example, the following command will start 2 default CA instances:
 
 .. code:: bash
 
-    fabric-ca-server start -b admin:adminpw --cacount 2
+   fabric-ca-server start -b admin:adminpw --cacount 2
 
 cafiles:
 ^^^^^^^^
@@ -1358,6 +984,7 @@ For example, the following command will start two customized CA instances:
     fabric-ca-server start -b admin:adminpw --cafiles ca/ca1/fabric-ca-config.yaml
     --cafiles ca/ca2/fabric-ca-config.yaml
 
+
 Enrolling an intermediate CA
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1375,7 +1002,120 @@ CA tries to explicitly specify a CN value.
 
 For other intermediate CA flags see `Fabric CA server's configuration file format`_ section.
 
+
+Upgrading the server
+~~~~~~~~~~~~~~~~~~~~
+
+The Fabric CA server must be upgraded before upgrading the Fabric CA client.
+Prior to upgrade, it is suggested that the current database be backed up:
+
+- If using sqlite3, backup the current database file (which is named fabric-ca-server.db by default).
+- For other database types, use the appropriate backup/replication mechanism.
+
+To upgrade a single instance of Fabric CA server:
+
+1. Stop the fabric-ca-server process.
+2. Ensure the current database is backed up.
+3. Replace previous fabric-ca-server binary with the upgraded version.
+4. Launch the fabric-ca-server process.
+5. Verify the fabric-ca-server process is available with the following
+   command where <host> is the hostname on which the server was started::
+
+      fabric-ca-client getcainfo -u http://<host>:7054
+
+Upgrading a cluster:
+^^^^^^^^^^^^^^^^^^^^
+To upgrade a cluster of fabric-ca-server instances using either a MySQL or Postgres database, perform the following procedure. We assume that you are using haproxy to load balance to two fabric-ca-server cluster members on host1 and host2, respectively, both listening on port 7054. After this procedure, you will be load balancing to upgraded fabric-ca-server cluster members on host3 and host4 respectively, both listening on port 7054.
+
+In order to monitor the changes using haproxy stats, enable statistics collection. Add the following lines to the global section of the haproxy configuration file:
+
+::
+
+    stats socket /var/run/haproxy.sock mode 666 level operator
+    stats timeout 2m
+
+Restart haproxy to pick up the changes::
+
+    # haproxy -f <configfile> -st $(pgrep haproxy)
+
+To display summary information from the haproxy "show stat" command, the following function may prove useful for parsing the copious amount of CSV data returned:
+
+.. code:: bash
+
+    haProxyShowStats() {
+       echo "show stat" | nc -U /var/run/haproxy.sock |sed '1s/^# *//'|
+          awk -F',' -v fmt="%4s %12s %10s %6s %6s %4s %4s\n" '
+             { if (NR==1) for (i=1;i<=NF;i++) f[tolower($i)]=i }
+             { printf fmt, $f["sid"],$f["pxname"],$f["svname"],$f["status"],
+                           $f["weight"],$f["act"],$f["bck"] }'
+    }
+
+
+1) Initially your haproxy configuration file is similar to the following::
+
+      server server1 host1:7054 check
+      server server2 host2:7054 check
+
+   Change this configuration to the following::
+
+      server server1 host1:7054 check backup
+      server server2 host2:7054 check backup
+      server server3 host3:7054 check
+      server server4 host4:7054 check
+
+2) Restart the HA proxy with the new configuration as follows::
+
+      haproxy -f <configfile> -st $(pgrep haproxy)
+
+   ``"haProxyShowStats"`` will now reflect the modified configuration,
+   with two active, older-version backup servers and two (yet to be started) upgraded servers::
+
+      sid   pxname      svname  status  weig  act  bck
+        1   fabric-cas  server3   DOWN     1    1    0
+        2   fabric-cas  server4   DOWN     1    1    0
+        3   fabric-cas  server1     UP     1    0    1
+        4   fabric-cas  server2     UP     1    0    1
+
+3) Install upgraded binaries of fabric-ca-server on host3 and host4. The new
+   upgraded servers on host3 and host4 should be configured to use the same
+   database as their older counterparts on host1 and host2. After starting
+   the upgraded servers, the database will be automatically migrated. The
+   haproxy will forward all new traffic to the upgraded servers, since they
+   are not configured as backup servers. Verify using the ``"fabric-ca-client getcainfo"``
+   command that your cluster is still functioning appropriately before proceeding.
+   Also, ``"haProxyShowStats"`` should now reflect that all servers are active,
+   similar to the following::
+
+      sid   pxname      svname  status  weig  act  bck
+        1   fabric-cas  server3    UP     1    1    0
+        2   fabric-cas  server4    UP     1    1    0
+        3   fabric-cas  server1    UP     1    0    1
+        4   fabric-cas  server2    UP     1    0    1
+
+4) Stop the old servers on host1 and host2. Verify using the
+   ``"fabric-ca-client getcainfo"`` command that your new cluster is still
+   functioning appropriately before proceeding. Then remove the older
+   server backup configuration from the haproxy configuration file,
+   so that it looks similar to the following::
+
+      server server3 host3:7054 check
+      server server4 host4:7054 check
+
+5) Restart the HA proxy with the new configuration as follows::
+
+      haproxy -f <configfile> -st $(pgrep haproxy)
+
+   ``"haProxyShowStats"`` will now reflect the modified configuration,
+   with two active servers which have been upgraded to the new version::
+
+      sid   pxname      svname  status  weig  act  bck
+        1   fabric-cas  server3   UP       1    1    0
+        2   fabric-cas  server4   UP       1    1    0
+
+
 `Back to Top`_
+
+
 
 .. _client:
 
@@ -1385,15 +1125,14 @@ Fabric CA Client
 This section describes how to use the fabric-ca-client command.
 
 The Fabric CA client's home directory is determined as follows:
-
-  - if the ``FABRIC_CA_CLIENT_HOME`` environment variable is set, use
+  - if the --home command line option is set, use its value
+  - otherwise, if the ``FABRIC_CA_CLIENT_HOME`` environment variable is set, use
     its value
   - otherwise, if the ``FABRIC_CA_HOME`` environment variable is set,
     use its value
   - otherwise, if the ``CA_CFG_PATH`` environment variable is set, use
     its value
   - otherwise, use ``$HOME/.fabric-ca-client``
-
 
 The instructions below assume that the client configuration file exists
 in the client's home directory.
@@ -1447,28 +1186,120 @@ The identity performing the register request must be currently enrolled, and
 must also have the proper authority to register the type of the identity that is being
 registered.
 
-In particular, two authorization checks are made by the Fabric CA server
+In particular, three authorization checks are made by the Fabric CA server
 during registration as follows:
 
- 1. The invoker's identity must have the "hf.Registrar.Roles" attribute with a
-    comma-separated list of values where one of the value equals the type of
-    identity being registered; for example, if the invoker's identity has the
-    "hf.Registrar.Roles" attribute with a value of "peer,app,user", the invoker can register identities of type peer, app, and user, but not orderer.
+1. The registrar (i.e. the invoker) must have the "hf.Registrar.Roles" attribute with a
+   comma-separated list of values where one of the values equals the type of
+   identity being registered; for example, if the registrar has the
+   "hf.Registrar.Roles" attribute with a value of "peer,app,user", the registrar
+   can register identities of type peer, app, and user, but not orderer.
 
- 2. The affiliation of the invoker's identity must be equal to or a prefix of
-    the affiliation of the identity being registered.  For example, an invoker
-    with an affiliation of "a.b" may register an identity with an affiliation
-    of "a.b.c" but may not register an identity with an affiliation of "a.c".
+2. The affiliation of the registrar must be equal to or a prefix of
+   the affiliation of the identity being registered.  For example, an registrar
+   with an affiliation of "a.b" may register an identity with an affiliation
+   of "a.b.c" but may not register an identity with an affiliation of "a.c".
+   If root affiliation is required for an identity, then the affiliation request
+   should be a dot (".") and the registrar must also have root affiliation.
+   If no affiliation is specified in the registration request, the identity being
+   registered will be given the affiliation of the registrar.
+
+3. The registrar can register a user with attributes if all of the following conditions
+   are satisfied:
+
+   - Registrar can register Fabric CA reserved attributes that have the prefix 'hf.'
+     only if the registrar possesses the attribute and it is part of the value of the
+     hf.Registrar.Attributes' attribute. Furthermore, if the attribute is of type list
+     then the value of attribute being registered must be equal to or a subset of the
+     value that the registrar has. If the attribute is of type boolean, the registrar
+     can register the attribute only if the registrar's value for the attribute is 'true'.
+   - Registering custom attributes (i.e. any attribute whose name does not begin with 'hf.')
+     requires that the registrar has the 'hf.Registar.Attributes' attribute with the value of
+     the attribute or pattern being registered. The only supported pattern is a string with
+     a "*" at the end. For example, "a.b.*" is a pattern which matches all attribute names
+     beginning with "a.b.". For example, if the registrar has hf.Registrar.Attributes=orgAdmin,
+     then the only attribute which the registrar can add or remove from an identity is the
+     'orgAdmin' attribute.
+   - If the requested attribute name is 'hf.Registrar.Attributes', an additional
+     check is performed to see if the requested values for this attribute are equal
+     to or a subset of the registrar's values for 'hf.Registrar.Attributes'. For this
+     to be true, each requested value must match a value in the registrar's value for
+     'hf.Registrar.Attributes' attribute. For example, if the registrar's value for
+     'hf.Registrar.Attributes' is 'a.b.*, x.y.z' and the requested attribute
+     value is 'a.b.c, x.y.z', it is valid because 'a.b.c' matches 'a.b.*' and 'x.y.z'
+     matches the registrar's 'x.y.z' value.
+
+Examples:
+   Valid Scenarios:
+      1. If the registrar has the attribute 'hf.Registrar.Attributes = a.b.*, x.y.z' and
+         is registering attribute 'a.b.c', it is valid 'a.b.c' matches 'a.b.*'.
+      2. If the registrar has the attribute 'hf.Registrar.Attributes = a.b.*, x.y.z' and
+         is registering attribute 'x.y.z', it is valid because 'x.y.z' matches the registrar's
+         'x.y.z' value.
+      3. If the registrar has the attribute 'hf.Registrar.Attributes = a.b.*, x.y.z' and
+         the requested attribute value is 'a.b.c, x.y.z', it is valid because 'a.b.c' matches
+         'a.b.*' and 'x.y.z' matches the registrar's 'x.y.z' value.
+      4. If the registrar has the attribute 'hf.Registrar.Roles = peer,client' and
+         the requested attribute value is 'peer' or 'peer,client', it is valid because
+         the requested value is equal to or a subset of the registrar's value.
+
+   Invalid Scenarios:
+      1. If the registrar has the attribute 'hf.Registrar.Attributes = a.b.*, x.y.z' and
+         is registering attribute 'hf.Registar.Attributes = a.b.c, x.y.*', it is invalid
+         because requested attribute 'x.y.*' is not a pattern owned by the registrar. The value
+         'x.y.*' is a superset of 'x.y.z'.
+      2. If the registrar has the attribute 'hf.Registrar.Attributes = a.b.*, x.y.z' and
+         is registering attribute 'hf.Registar.Attributes = a.b.c, x.y.z, attr1', it is invalid
+         because the registrar's 'hf.Registrar.Attributes' attribute values do not contain 'attr1'.
+      3. If the registrar has the attribute 'hf.Registrar.Attributes = a.b.*, x.y.z' and
+         is registering attribute 'a.b', it is invalid because the value 'a.b' is not contained in
+         'a.b.*'.
+      4. If the registrar has the attribute 'hf.Registrar.Attributes = a.b.*, x.y.z' and
+         is registering attribute 'x.y', it is invalid because 'x.y' is not contained by 'x.y.z'.
+      5. If the registrar has the attribute 'hf.Registrar.Roles = peer,client' and
+         the requested attribute value is 'peer,client,orderer', it is invalid because
+         the registrar does not have the orderer role in its value of hf.Registrar.Roles
+         attribute.
+      6. If the registrar has the attribute 'hf.Revoker = false' and the requested attribute
+         value is 'true', it is invalid because the hf.Revoker attribute is a boolean attribute
+         and the registrar's value for the attribute is not 'true'.
+
+The table below lists all the attributes that can be registered for an identity.
+The names of attributes are case sensitive.
+
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+| Name                        | Type       | Description                                                                                                |
++=============================+============+============================================================================================================+
+| hf.Registrar.Roles          | List       | List of roles that the registrar is allowed to manage                                                      |
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+| hf.Registrar.DelegateRoles  | List       | List of roles that the registrar is allowed to give to a registree for its 'hf.Registrar.Roles' attribute  |
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+| hf.Registrar.Attributes     | List       | List of attributes that registrar is allowed to register                                                   |
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+| hf.GenCRL                   | Boolean    | Identity is able to generate CRL if attribute value is true                                                |
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+| hf.Revoker                  | Boolean    | Identity is able to revoke a user and/or certificates if attribute value is true                           |
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+| hf.AffiliationMgr           | Boolean    | Identity is able to manage affiliations if attribute value is true                                         |
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+| hf.IntermediateCA           | Boolean    | Identity is able to enroll as an intermediate CA if attribute value is true                                |
++-----------------------------+------------+------------------------------------------------------------------------------------------------------------+
+
+Note: When registering an identity, you specify an array of attribute names and values. If the array
+specifies multiple array elements with the same name, only the last element is currently used. In other words,
+multi-valued attributes are not currently supported.
 
 The following command uses the **admin** identity's credentials to register a new
-identity with an enrollment id of "admin2", a type of "user", an affiliation of
+user with an enrollment id of "admin2", an affiliation of
 "org1.department1", an attribute named "hf.Revoker" with a value of "true", and
-an attribute named "foo" with a value of "bar".
+an attribute named "admin" with a value of "true".  The ":ecert" suffix means that
+by default the "admin" attribute and its value will be inserted into the user's
+enrollment certificate, which can then be used to make access control decisions.
 
 .. code:: bash
 
     export FABRIC_CA_CLIENT_HOME=$HOME/fabric-ca/clients/admin
-    fabric-ca-client register --id.name admin2 --id.type user --id.affiliation org1.department1 --id.attrs 'hf.Revoker=true,foo=bar'
+    fabric-ca-client register --id.name admin2 --id.affiliation org1.department1 --id.attrs 'hf.Revoker=true,admin=true:ecert'
 
 The password, also known as the enrollment secret, is printed.
 This password is required to enroll the identity.
@@ -1481,13 +1312,13 @@ the attribute must be encapsulated in double quotes. See example below.
 
 .. code:: bash
 
-    fabric-ca-client register -d --id.name admin2 --id.type user --id.affiliation org1.department1 --id.attrs '"hf.Registrar.Roles=peer,user",hf.Revoker=true'
+    fabric-ca-client register -d --id.name admin2 --id.affiliation org1.department1 --id.attrs '"hf.Registrar.Roles=peer,user",hf.Revoker=true'
 
 or
 
 .. code:: bash
 
-    fabric-ca-client register -d --id.name admin2 --id.type user --id.affiliation org1.department1 --id.attrs '"hf.Registrar.Roles=peer,user"' --id.attrs hf.Revoker=true
+    fabric-ca-client register -d --id.name admin2 --id.affiliation org1.department1 --id.attrs '"hf.Registrar.Roles=peer,user"' --id.attrs hf.Revoker=true
 
 You may set default values for any of the fields used in the register command
 by editing the client's configuration file.  For example, suppose the configuration
@@ -1520,7 +1351,7 @@ To register an identity with multiple attributes requires specifying all attribu
 in the configuration file as shown above.
 
 Setting `maxenrollments` to 0 or leaving it out from the configuration will result in the identity
-being registerd to use the CA's max enrollment value. Furthermore, the max enrollment value for
+being registered to use the CA's max enrollment value. Furthermore, the max enrollment value for
 an identity being registered cannot exceed the CA's max enrollment value. For example, if the CA's
 max enrollment value is 5. Any new identity must have a value less than or equal to 5, and also
 can't set it to -1 (infinite enrollments).
@@ -1534,7 +1365,31 @@ password (or secret) rather than letting the server generate one for us.
     export FABRIC_CA_CLIENT_HOME=$HOME/fabric-ca/clients/admin
     fabric-ca-client register --id.name peer1 --id.type peer --id.affiliation org1.department1 --id.secret peer1pw
 
-Enrolling a Peer Identity
+Note that affiliations are case sensitive except for the non-leaf affiliations that are specified in
+the server configuration file, which are always stored in lower case. For example, if the affiliations
+section of the server configuration file looks like this:
+
+.. code:: bash
+
+    affiliations:
+      BU1:
+        Department1:
+          - Team1
+      BU2:
+        - Department2
+        - Department3
+
+`BU1`, `Department1`, `BU2` are stored in lower case. This is because Fabric CA uses Viper to read configuration.
+Viper treats map keys as case insensitive and always returns lowercase value. To register an identity with
+`Team1` affiliation, `bu1.department1.Team1` would need to be specified to the
+`--id.affiliation` flag as shown below:
+
+.. code:: bash
+
+    export FABRIC_CA_CLIENT_HOME=$HOME/fabric-ca/clients/admin
+    fabric-ca-client register --id.name client1 --id.type client --id.affiliation bu1.department1.Team1
+
+Enrolling a peer identity
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Now that you have successfully registered a peer identity, you may now
@@ -1557,13 +1412,23 @@ You may also set the FABRIC_CA_CLIENT_HOME to the home directory of your peer.
 Enrolling an orderer is the same, except the path to the MSP directory is
 the 'LocalMSPDir' setting in your orderer's orderer.yaml file.
 
+All enrollment certificates issued by the fabric-ca-server have organizational
+units (or "OUs" for short) as follows:
+
+1. The root of the OU hierarchy equals the identity type
+2. An OU is added for each component of the identity's affiliation
+
+For example, if an identity is of type `peer` and its affiliation is
+`department1.team1`, the identity's OU hierarchy (from leaf to root) is
+`OU=team1, OU=department1, OU=peer`.
+
 Getting a CA certificate chain from another Fabric CA server
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In general, the cacerts directory of the MSP directory must contain the certificate authority chains
 of other certificate authorities, representing all of the roots of trust for the peer.
 
-The ``fabric-ca-client getcacerts`` command is used to retrieve these certificate chains from other
+The ``fabric-ca-client getcainfo`` command is used to retrieve these certificate chains from other
 Fabric CA server instances.
 
 For example, the following will start a second Fabric CA server on localhost
@@ -1580,7 +1445,62 @@ The following command will install CA2's certificate chain into peer1's MSP dire
 .. code:: bash
 
     export FABRIC_CA_CLIENT_HOME=$HOME/fabric-ca/clients/peer1
-    fabric-ca-client getcacert -u http://localhost:7055 -M $FABRIC_CA_CLIENT_HOME/msp
+    fabric-ca-client getcainfo -u http://localhost:7055 -M $FABRIC_CA_CLIENT_HOME/msp
+
+By default, the Fabric CA server returns the CA chain in child-first order. This means that each CA
+certificate in the chain is followed by its issuer's CA certificate. If you need the Fabric CA server
+to return the CA chain in the opposite order, then set the environment variable ``CA_CHAIN_PARENT_FIRST``
+to ``true`` and restart the Fabric CA server. The Fabric CA client will handle either order appropriately.
+
+Getting Identity Mixer credential for a user
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Identity Mixer (Idemix) is a cryptographic protocol suite for privacy-preserving authentication and transfer of certified attributes.
+Idemix allows users to authenticate with verifiers without the involvement of the issuer (CA) and selectively disclose only those attributes
+that are required by the verifier and can do so without being linkable across their transactions.
+
+Fabric CA server can issue Idemix credentials in addition to X509 certificates. An Idemix credential can be requested by sending the request to
+the ``/api/v1/idemix/credential`` API endpoint. For more information on this and other Fabric CA server API endpoints, please refer to
+`swagger-fabric-ca.json <https://github.com/hyperledger/fabric-ca/blob/master/swagger/swagger-fabric-ca.json>`_.
+
+The Idemix credential issuance is a two step process. First, send a request with an empty body to the ``/api/v1/idemix/credential``
+API endpoint to get a nonce and CA's Idemix public key. Second, create a credential request using the nonce and CA's Idemix public key and
+send another request with the credential request in the body to  the ``/api/v1/idemix/credential`` API endpoint to get an Idemix credential,
+Credential Revocation Information (CRI), and attribute names and values. Currently, only three attributes are supported:
+
+- **OU** - organization unit of the user. The value of this attribute is set to user's affiliation. For example, if user's affiliaton is `dept1.unit1`, then OU attribute is set to `dept1.unit1`
+- **IsAdmin** - if the user is an admin or not. The value of this attribute is set to the value of `isAdmin` registration attribute.
+- **EnrollmentID** - enrollment ID of the user
+
+You can refer to the `handleIdemixEnroll` function in https://github.com/hyperledger/fabric-ca/blob/master/lib/client.go for reference implementation
+of the two step process for getting Idemix credential.
+
+The ``/api/v1/idemix/credential`` API endpoint accepts both basic and token authorization headers. The basic authorization header should
+contain User's registration ID and password. If the user already has X509 enrollment certificate, it can also be used to create a token authorization header.
+
+Note that Hyperledger Fabric will support clients/users to sign transactions with both X509 and Idemix credentials, but will only support X509 credentials
+for peer and orderer identities. As before, applications can use a Fabric SDK to send requests to the Fabric CA server. SDKs hide the complexity
+associated with creating authorization header and request payload, and with processing the response.
+
+Getting Idemix CRI (Certificate Revocation Information)
+-----------------------------------------------
+An Idemix CRI (Credential Revocation Information) is similar in purpose to an X509 CRL (Certificate Revocation List):
+to revoke what was previously issued.  However, there are some differences.
+
+In X509, the issuer revokes an end user's certificate and its ID is included in the CRL.
+The verifier checks to see if the user's certificate is in the CRL and if so, returns an authorization failure.
+The end user is not involved in this revocation process, other than receiving an authorization error from a verifier.
+
+In Idemix, the end user is involved.  The issuer revokes an end user's credential similar to X509 and evidence of this
+revocation is recorded in the CRI.  The CRI is given to the end user (aka "prover").  The end user then generates a
+proof that their credential has not been revoked according to the CRI.  The end user gives this proof to the verifier
+who verifies the proof according to the CRI.
+For verification to succeed, the version of the CRI (known as the "epoch") used by the end user and verifier must be same.
+The latest CRI can be requested by sending a request to ``/api/v1/idemix/cri`` API endpoint.
+
+The version of the CRI is incremented when an enroll request is received by the fabric-ca-server and there are no revocation
+handles remaining in the revocation handle pool. In this case, the fabric-ca-server must generate a new pool of revocation
+handles which increments the epoch of the CRI. The number of revocation handles in the revocation handle pool is configurable
+via the ``idemix.rhpoolsize`` server configuration property.
 
 Reenrolling an Identity
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -1600,13 +1520,16 @@ the certificates owned by the identity and will also prevent the identity from g
 any new certificates. Revoking a certificate will invalidate a single certificate.
 
 In order to revoke a certificate or an identity, the calling identity must have
-the ``hf.Revoker`` attribute. The revoking identity can only revoke a certificate
-or an identity that has an affiliation that is equal to or prefixed by the revoking
-identity's affiliation.
+the ``hf.Revoker`` and ``hf.Registrar.Roles`` attribute. The revoking identity
+can only revoke a certificate or an identity that has an affiliation that is
+equal to or prefixed by the revoking identity's affiliation. Furthermore, the
+revoker can only revoke identities with types that are listed in the revoker's
+``hf.Registrar.Roles`` attribute.
 
-For example, a revoker with affiliation **orgs.org1** can revoke an identity
-affiliated with **orgs.org1** or **orgs.org1.department1** but can't revoke an
-identity affiliated with **orgs.org2**.
+For example, a revoker with affiliation **orgs.org1** and 'hf.Registrar.Roles=peer,client'
+attribute can revoke either a **peer** or **client** type identity affiliated with
+**orgs.org1** or **orgs.org1.department1** but can't revoke an identity affiliated with
+**orgs.org2** or of any other type.
 
 The following command disables an identity and revokes all of the certificates
 associated with the identity. All future requests received by the Fabric CA server
@@ -1653,6 +1576,70 @@ and pass them to the ``revoke`` command to revoke the said certificate as follow
    aki=$(openssl x509 -in userecert.pem -text | awk '/keyid/ {gsub(/ *keyid:|:/,"",$1);print tolower($0)}')
    fabric-ca-client revoke -s $serial -a $aki -r affiliationchange
 
+The `--gencrl` flag can be used to generate a CRL (Certificate Revocation List) that contains all the revoked
+certificates. For example, following command will revoke the identity **peer1**, generates a CRL and stores
+it in the **<msp folder>/crls/crl.pem** file.
+
+.. code:: bash
+
+    fabric-ca-client revoke -e peer1 --gencrl
+
+A CRL can also be generated using the `gencrl` command. Refer to the `Generating a CRL (Certificate Revocation List)`_
+section for more information on the `gencrl` command.
+
+Generating a CRL (Certificate Revocation List)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+After a certificate is revoked in the Fabric CA server, the appropriate MSPs in Hyperledger Fabric must also be updated.
+This includes both local MSPs of the peers as well as MSPs in the appropriate channel configuration blocks.
+To do this, PEM encoded CRL (certificate revocation list) file must be placed in the `crls`
+folder of the MSP. The ``fabric-ca-client gencrl`` command can be used to generate a CRL. Any identity
+with ``hf.GenCRL`` attribute can create a CRL that contains serial numbers of all certificates that were revoked
+during a certain period. The created CRL is stored in the `<msp folder>/crls/crl.pem` file.
+
+The following command will create a CRL containing all the revoked certficates (expired and unexpired) and
+store the CRL in the `~/msp/crls/crl.pem` file.
+
+.. code:: bash
+
+    export FABRIC_CA_CLIENT_HOME=~/clientconfig
+    fabric-ca-client gencrl -M ~/msp
+
+The next command will create a CRL containing all certificates (expired and unexpired) that were revoked after
+2017-09-13T16:39:57-08:00 (specified by the `--revokedafter` flag) and before 2017-09-21T16:39:57-08:00
+(specified by the `--revokedbefore` flag) and store the CRL in the `~/msp/crls/crl.pem` file.
+
+.. code:: bash
+
+    export FABRIC_CA_CLIENT_HOME=~/clientconfig
+    fabric-ca-client gencrl --caname "" --revokedafter 2017-09-13T16:39:57-08:00 --revokedbefore 2017-09-21T16:39:57-08:00 -M ~/msp
+
+
+The `--caname` flag specifies the name of the CA to which this request is sent. In this example, the gencrl request is
+sent to the default CA.
+
+The `--revokedafter` and `--revokedbefore` flags specify the lower and upper boundaries of a time period.
+The generated CRL will contain certificates that were revoked in this time period. The values must be UTC
+timestamps specified in RFC3339 format. The `--revokedafter` timestamp cannot be greater than the
+`--revokedbefore` timestamp.
+
+By default, 'Next Update' date of the CRL is set to next day. The `crl.expiry` CA configuration property
+can be used to specify a custom value.
+
+The gencrl command will also accept `--expireafter` and `--expirebefore` flags that can be used to generate a CRL
+with revoked certificates that expire during the period specified by these flags. For example, the following command
+will generate a CRL that contains certificates that were revoked after 2017-09-13T16:39:57-08:00 and
+before 2017-09-21T16:39:57-08:00, and that expire after 2017-09-13T16:39:57-08:00 and before 2018-09-13T16:39:57-08:00
+
+.. code:: bash
+
+    export FABRIC_CA_CLIENT_HOME=~/clientconfig
+    fabric-ca-client gencrl --caname "" --expireafter 2017-09-13T16:39:57-08:00 --expirebefore 2018-09-13T16:39:57-08:00  --revokedafter 2017-09-13T16:39:57-08:00 --revokedbefore 2017-09-21T16:39:57-08:00 -M ~/msp
+
+The `fabric-samples/fabric-ca <https://github.com/hyperledger/fabric-samples/blob/master/fabric-ca/scripts/run-fabric.sh>`_
+sample demonstrates how to generate a CRL that contains certificate of a revoked user and update the channel
+msp. It will then demonstrate that querying the channel using the revoked user credentials will result
+in an authorization error.
+
 Enabling TLS
 ~~~~~~~~~~~~
 
@@ -1679,13 +1666,535 @@ file.
 The **client** option is required only if mutual TLS is configured on
 the server.
 
+Attribute-Based Access Control
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Access control decisions can be made by chaincode (and by the Hyperledger Fabric runtime)
+based upon an identity's attributes.  This is called
+**Attribute-Based Access Control**, or **ABAC** for short.
+
+In order to make this possible, an identity's enrollment certificate (ECert)
+may contain one or more attribute name and value.  The chaincode then
+extracts an attribute's value to make an access control decision.
+
+For example, suppose that you are developing application *app1* and want a
+particular chaincode operation to be accessible only by app1 administrators.
+Your chaincode could verify that the caller's certificate (which was issued by
+a CA trusted for the channel) contains an attribute named *app1Admin* with a
+value of *true*.  Of course the name of the attribute can be anything and the
+value need not be a boolean value.
+
+So how do you get an enrollment certificate with an attribute?
+There are two methods:
+
+1.   When you register an identity, you can specify that an enrollment certificate
+     issued for the identity should by default contain an attribute.  This behavior
+     can be overridden at enrollment time, but this is useful for establishing
+     default behavior and, assuming registration occurs outside of your application,
+     does not require any application change.
+
+     The following shows how to register *user1* with two attributes:
+     *app1Admin* and *email*.
+     The ":ecert" suffix causes the *appAdmin* attribute to be inserted into user1's
+     enrollment certificate by default, when the user does not explicitly request
+     attributes at enrollment time.  The *email* attribute is not added
+     to the enrollment certificate by default.
+
+.. code:: bash
+
+     fabric-ca-client register --id.name user1 --id.secret user1pw --id.type user --id.affiliation org1 --id.attrs 'app1Admin=true:ecert,email=user1@gmail.com'
+
+2. When you enroll an identity, you may explicitly request that one or more attributes
+   be added to the certificate.
+   For each attribute requested, you may specify whether the attribute is
+   optional or not.  If it is not requested optionally and the identity does
+   not possess the attribute, an error will occur.
+
+   The following shows how to enroll *user1* with the *email* attribute,
+   without the *app1Admin* attribute, and optionally with the *phone*
+   attribute (if the user possesses the *phone* attribute).
+
+.. code:: bash
+
+   fabric-ca-client enroll -u http://user1:user1pw@localhost:7054 --enrollment.attrs "email,phone:opt"
+
+The table below shows the three attributes which are automatically registered for every identity.
+
+===================================   =====================================
+     Attribute Name                               Attribute Value
+===================================   =====================================
+  hf.EnrollmentID                        The enrollment ID of the identity
+  hf.Type                                The type of the identity
+  hf.Affiliation                         The affiliation of the identity
+===================================   =====================================
+
+To add any of the above attributes **by default** to a certificate, you must
+explicitly register the attribute with the ":ecert" specification.
+For example, the following registers identity 'user1' so that
+the 'hf.Affiliation' attribute will be added to an enrollment certificate if
+no specific attributes are requested at enrollment time.  Note that the
+value of the affiliation (which is 'org1') must be the same in both the
+'--id.affiliation' and the '--id.attrs' flags.
+
+.. code:: bash
+
+    fabric-ca-client register --id.name user1 --id.secret user1pw --id.type user --id.affiliation org1 --id.attrs 'hf.Affiliation=org1:ecert'
+
+For information on the chaincode library API for Attribute-Based Access Control,
+see `https://github.com/hyperledger/fabric/tree/release-1.1/core/chaincode/lib/cid/README.md <https://github.com/hyperledger/fabric/tree/release-1.1/core/chaincode/lib/cid/README.md>`_
+
+For an end-to-end sample which demonstrates Attribute-Based Access Control and more,
+see `https://github.com/hyperledger/fabric-samples/tree/release-1.1/fabric-ca/README.md <https://github.com/hyperledger/fabric-samples/tree/release-1.1/fabric-ca/README.md>`_
+
+Dynamic Server Configuration Update
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This section describes how to use fabric-ca-client to dynamically update portions
+of the fabric-ca-server's configuration without restarting the server.
+
+All commands in this section require that you first be enrolled by executing the
+`fabric-ca-client enroll` command.
+
+Dynamically updating identities
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This section describes how to use fabric-ca-client to dynamically update identities.
+
+An authorization failure will occur if the client identity does not satisfy all of the following:
+
+ - The client identity must possess the "hf.Registrar.Roles" attribute with a comma-separated list of
+   values where one of the values equals the type of identity being updated; for example, if the client's
+   identity has the "hf.Registrar.Roles" attribute with a value of "client,peer", the client can update
+   identities of type 'client' and 'peer', but not 'orderer'.
+
+ - The affiliation of the client's identity must be equal to or a prefix of the affiliation of the identity
+   being updated.  For example, a client with an affiliation of "a.b" may update an identity with an affiliation
+   of "a.b.c" but may not update an identity with an affiliation of "a.c". If root affiliation is required for an
+   identity, then the update request should specify a dot (".") for the affiliation and the client must also have
+   root affiliation.
+
+The following shows how to add, modify, and remove an affiliation.
+
+Getting Identity Information
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A caller may retrieve information on a identity from the fabric-ca server as long as the caller meets
+the authorization requirements highlighted in the section above. The following command shows how to get an
+identity.
+
+.. code:: bash
+
+    fabric-ca-client identity list --id user1
+
+A caller may also request to retrieve information on all identities that it is authorized to see by
+issuing the following command.
+
+.. code:: bash
+
+    fabric-ca-client identity list
+
+Adding an identity
+"""""""""""""""""""
+
+The following adds a new identity for 'user1'. Adding a new identity performs the same action as registering an
+identity via the 'fabric-ca-client register' command. There are two available methods for adding a new identity.
+The first method is via the `--json` flag where you describe the identity in a JSON string.
+
+.. code:: bash
+
+    fabric-ca-client identity add user1 --json '{"secret": "user1pw", "type": "user", "affiliation": "org1", "max_enrollments": 1, "attrs": [{"name": "hf.Revoker", "value": "true"}]}'
+
+The following adds a user with root affiliation. Note that an affiliation name of "." means the root affiliation.
+
+.. code:: bash
+
+    fabric-ca-client identity add user1 --json '{"secret": "user1pw", "type": "user", "affiliation": ".", "max_enrollments": 1, "attrs": [{"name": "hf.Revoker", "value": "true"}]}'
+
+The second method for adding an identity is to use direct flags. See the example below for adding 'user1'.
+
+.. code:: bash
+
+    fabric-ca-client identity add user1 --secret user1pw --type user --affiliation . --maxenrollments 1 --attrs hf.Revoker=true
+
+The table below lists all the fields of an identity and whether they are required or optional, and any default values they might have.
+
++----------------+------------+------------------------+
+| Fields         | Required   | Default Value          |
++================+============+========================+
+| ID             | Yes        |                        |
++----------------+------------+------------------------+
+| Secret         | No         |                        |
++----------------+------------+------------------------+
+| Affiliation    | No         | Caller's Affiliation   |
++----------------+------------+------------------------+
+| Type           | No         | client                 |
++----------------+------------+------------------------+
+| Maxenrollments | No         | 0                      |
++----------------+------------+------------------------+
+| Attributes     | No         |                        |
++----------------+------------+------------------------+
+
+
+Modifying an identity
+""""""""""""""""""""""
+
+There are two available methods for modifying an existing identity. The first method is via the `--json` flag where you describe
+the modifications in to an identity in a JSON string. Multiple modifications can be made in a single request. Any element of an identity that
+is not modified will retain its original value.
+
+NOTE: A maxenrollments value of "-2" specifies that the CA's max enrollment setting is to be used.
+
+The command below make multiple modification to an identity using the --json flag.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --json '{"secret": "newPassword", "affiliation": ".", "attrs": [{"name": "hf.Regisrar.Roles", "value": "peer,client"},{"name": "hf.Revoker", "value": "true"}]}'
+
+The commands below make modifications using direct flags. The following updates the enrollment secret (or password) for identity 'user1' to 'newsecret'.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --secret newsecret
+
+The following updates the affiliation of identity 'user1' to 'org2'.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --affiliation org2
+
+The following updates the type of identity 'user1' to 'peer'.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --type peer
+
+
+The following updates the maxenrollments of identity 'user1' to 5.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --maxenrollments 5
+
+By specifying a maxenrollments value of '-2', the following causes identity 'user1' to use
+the CA's max enrollment setting.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --maxenrollments -2
+
+The following sets the value of the 'hf.Revoker' attribute for identity 'user1' to 'false'.
+If the identity has other attributes, they are not changed.  If the identity did not previously
+possess the 'hf.Revoker' attribute, the attribute is added to the identity. An attribute may
+also be removed by specifying no value for the attribute.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --attrs hf.Revoker=false
+
+The following removes the 'hf.Revoker' attribute for user 'user1'.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --attrs hf.Revoker=
+
+The following demonstrates that multiple options may be used in a single `fabric-ca-client identity modify`
+command. In this case, both the secret and the type are updated for user 'user1'.
+
+.. code:: bash
+
+    fabric-ca-client identity modify user1 --secret newpass --type peer
+
+Removing an identity
+"""""""""""""""""""""
+
+The following removes identity 'user1' and also revokes any certificates associated with the 'user1' identity.
+
+.. code:: bash
+
+    fabric-ca-client identity remove user1
+
+Note: Removal of identities is disabled in the fabric-ca-server by default, but may be enabled
+by starting the fabric-ca-server with the `--cfg.identities.allowremove` option.
+
+Dynamically updating affiliations
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This section describes how to use fabric-ca-client to dynamically update affiliations. The
+following shows how to add, modify, remove, and list an affiliation.
+
+Adding an affiliation
+"""""""""""""""""""""""
+
+An authorization failure will occur if the client identity does not satisfy all of the following:
+
+  - The client identity must possess the attribute 'hf.AffiliationMgr' with a value of 'true'.
+  - The affiliation of the client identity must be hierarchically above the affiliation being updated.
+    For example, if the client's affiliation is "a.b", the client may add affiliation "a.b.c" but not
+    "a" or "a.b".
+
+The following adds a new affiliation named ‘org1.dept1’.
+
+.. code:: bash
+
+    fabric-ca-client affiliation add org1.dept1
+
+Modifying an affiliation
+"""""""""""""""""""""""""
+
+An authorization failure will occur if the client identity does not satisfy all of the following:
+
+  - The client identity must possess the attribute 'hf.AffiliationMgr' with a value of 'true'.
+  - The affiliation of the client identity must be hierarchically above the affiliation being updated.
+    For example, if the client's affiliation is "a.b", the client may add affiliation "a.b.c" but not
+    "a" or "a.b".
+  - If the '--force' option is true and there are identities which must be modified, the client
+    identity must also be authorized to modify the identity.
+
+The following renames the 'org2' affiliation to 'org3'.  It also renames any sub affiliations
+(e.g. 'org2.department1' is renamed to 'org3.department1').
+
+.. code:: bash
+
+    fabric-ca-client affiliation modify org2 --name org3
+
+If there are identities that are affected by the renaming of an affiliation, it will result in
+an error unless the '--force' option is used. Using the '--force' option will update the affiliation
+of identities that are affected to use the new affiliation name.
+
+.. code:: bash
+
+    fabric-ca-client affiliation modify org1 --name org2 --force
+
+Removing an affiliation
+"""""""""""""""""""""""""
+
+An authorization failure will occur if the client identity does not satisfy all of the following:
+
+  - The client identity must possess the attribute 'hf.AffiliationMgr' with a value of 'true'.
+  - The affiliation of the client identity must be hierarchically above the affiliation being updated.
+    For example, if the client's affiliation is "a.b", the client may remove affiliation "a.b.c" but not
+    "a" or "a.b".
+  - If the '--force' option is true and there are identities which must be modified, the client
+    identity must also be authorized to modify the identity.
+
+The following removes affiliation 'org2' and also any sub affiliations.
+For example, if 'org2.dept1' is an affiliation below 'org2', it is also removed.
+
+.. code:: bash
+
+    fabric-ca-client affiliation remove org2
+
+If there are identities that are affected by the removing of an affiliation, it will result
+in an error unless the '--force' option is used. Using the '--force' option will also remove
+all identities that are associated with that affiliation, and the certificates associated with
+any of these identities.
+
+Note: Removal of affiliations is disabled in the fabric-ca-server by default, but may be enabled
+by starting the fabric-ca-server with the `--cfg.affiliations.allowremove` option.
+
+Listing affiliation information
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+An authorization failure will occur if the client identity does not satisfy all of the following:
+
+  - The client identity must possess the attribute 'hf.AffiliationMgr' with a value of 'true'.
+  - Affiliation of the client identity must be equal to or be hierarchically above the
+    affiliation being updated. For example, if the client's affiliation is "a.b",
+    the client may get affiliation information on "a.b" or "a.b.c" but not "a" or "a.c".
+
+The following command shows how to get a specific affiliation.
+
+.. code:: bash
+
+    fabric-ca-client affiliation list --affiliation org2.dept1
+
+A caller may also request to retrieve information on all affiliations that it is authorized to see by
+issuing the following command.
+
+.. code:: bash
+
+    fabric-ca-client affiliation list
+
+Manage Certificates
+~~~~~~~~~~~~~~~~~~~~
+
+This section describes how to use fabric-ca-client to manage certificates.
+
+Listing certificate information
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The certificates that are visible to a caller include:
+
+  - Those certificates which belong to the caller
+  - If the caller possesses the ``hf.Registrar.Roles`` attribute or the ``hf.Revoker`` attribute with a value of ``true``,
+    all certificates which belong to identities in and below the caller's affiliation. For example, if the client's
+    affiliation is ``a.b``, the client may get certificates for identities who's affiliation
+    is ``a.b`` or ``a.b.c`` but not ``a`` or ``a.c``.
+
+If executing a list command that requests certificates of more than one identity, only certificates of identities
+with an affiliation that is equal to or hierarchically below the caller's affiliation will be listed.
+
+The certificates which will be listed may be filtered based on ID, AKI, serial number, expiration time, revocation time, notrevoked, and notexpired flags.
+
+* ``id``: List certificates for this enrollment ID
+* ``serial``: List certificates that have this serial number
+* ``aki``: List certificates that have this AKI
+* ``expiration``: List certificates that have expiration dates that fall within this expiration time
+* ``revocation``: List certificates that were revoked within this revocation time
+* ``notrevoked``: List certificates that have not yet been revoked
+* ``notexpired``: List certificates that have not yet expired
+
+You can use flags ``notexpired`` and ``notrevoked`` as filters to exclude revoked certificates and/or expired certificates from the result set.
+For example, if you only care about certificates that have expired but have not been revoked you can use the ``expiration`` and ``notrevoked`` flags to
+get back such results. An example of this case is provided below.
+
+Time should be specified based on RFC3339. For instance, to list certificates that have expirations between
+March 1, 2018 at 1:00 PM and June 15, 2018 at 2:00 AM, the input time string would look like 2018-03-01T13:00:00z
+and 2018-06-15T02:00:00z. If time is not a concern, and only the dates matter, then the time part can be left
+off and then the strings become 2018-03-01 and 2018-06-15.
+
+The string ``now`` may be used to denote the current time and the empty string to denote any time. For example, ``now::`` denotes
+a time range from now to any time in the future, and ``::now`` denotes a time range from any time in the past until now.
+
+The following command shows how to list certificates using various filters.
+
+List all certificates:
+
+.. code:: bash
+
+ fabric-ca-client certificate list
+
+List all certificates by id:
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin
+
+List certificate by serial and aki:
+
+.. code:: bash
+
+ fabric-ca-client certificate list --serial 1234 --aki 1234
+
+List certificate by id and serial/aki:
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --serial 1234 --aki 1234
+
+List certificates that are neither revoker nor expired by id:
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --notrevoked --notexpired
+
+List all certificates that have not been revoked for an id (admin):
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --notrevoked
+
+List all certificates have not expired for an id (admin):
+
+The "--notexpired" flag is equivalent to "--expiration now::", which means certificates
+will expire some time in the future.
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --notexpired
+
+List all certificates that were revoked between a time range for an id (admin):
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --revocation 2018-01-01T01:30:00z::2018-01-30T05:00:00z
+
+List all certificates that were revoked between a time range but have not expired for an id (admin):
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --revocation 2018-01-01::2018-01-30 --notexpired
+
+List all revoked certificates using duration (revoked between 30 days and 15 days ago) for an id (admin):
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --revocation -30d::-15d
+
+List all revoked certificates before a time
+
+.. code:: bash
+
+ fabric-ca-client certificate list --revocation ::2018-01-30
+
+List all revoked certificates after a time
+
+.. code:: bash
+
+ fabric-ca-client certificate list --revocation 2018-01-30::
+
+List all revoked certificates before now and after a certain date
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --revocation 2018-01-30::now
+
+List all certificate that expired between a time range but have not been revoked for an id (admin):
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --expiration 2018-01-01::2018-01-30 --notrevoked
+
+List all expired certificates using duration (expired between 30 days and 15 days ago) for an id (admin):
+
+.. code:: bash
+
+ fabric-ca-client certificate list --expiration -30d::-15d
+
+List all certificates that have expired or will expire before a certain time
+
+.. code:: bash
+
+ fabric-ca-client certificate list --expiration ::2058-01-30
+
+List all certificates that have expired or will expire after a certain time
+
+.. code:: bash
+
+ fabric-ca-client certificate list --expiration 2018-01-30::
+
+List all expired certificates before now and after a certain date
+
+.. code:: bash
+
+ fabric-ca-client certificate list --expiration 2018-01-30::now
+
+List certificates expiring in the next 10 days:
+
+.. code:: bash
+
+ fabric-ca-client certificate list --id admin --expiration ::+10d --notrevoked
+
+The list certificate command can also be used to store certificates on the file
+system. This is a convenient way to populate the admins folder in an MSP, The "-store" flag
+points to the location on the file system to store the certificates.
+
+Configure an identity to be an admin, by storing certificates for an identity
+in the MSP:
+
+.. code:: bash
+
+ export FABRIC_CA_CLIENT_HOME=/tmp/clientHome
+ fabric-ca-client certificate list --id admin --store msp/admincerts
+
 Contact specific CA instance
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When a server is running multiple CA instances, requests can be directed to a
 specific CA. By default, if no CA name is specified in the client request the
 request will be directed to the default CA on the fabric-ca server. A CA name
-can be specified on the command line of a client command as follows:
+can be specified on the command line of a client command using the ``caname``
+filter as follows:
 
 .. code:: bash
 
@@ -1693,5 +2202,159 @@ can be specified on the command line of a client command as follows:
 
 `Back to Top`_
 
+HSM
+---
+By default, the Fabric CA server and client store private keys in a PEM-encoded file,
+but they can also be configured to store private keys in an HSM (Hardware Security Module)
+via PKCS11 APIs. This behavior is configured in the BCCSP (BlockChain Crypto Service Provider)
+section of the server’s or client’s configuration file.
+
+Configuring Fabric CA server to use softhsm2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This section shows how to configure the Fabric CA server or client to use a software version
+of PKCS11 called softhsm (see https://github.com/opendnssec/SoftHSMv2).
+
+After installing softhsm, make sure to set your SOFTHSM2_CONF environment variable to
+point to the location where the softhsm2 configuration file is stored. The config file looks like
+
+.. code::
+
+  directories.tokendir = /tmp/
+  objectstore.backend = file
+  log.level = INFO
+
+You can find example configuration file named softhsm2.conf under testdata directory.
+
+Create a token, label it “ForFabric”, set the pin to ‘98765432’
+(refer to softhsm documentation).
+
+
+
+You can use both the config file and environment variables to configure BCCSP
+For example, set the bccsp section of Fabric CA server configuration file as follows.
+Note that the default field’s value is PKCS11.
+
+.. code:: yaml
+
+  #############################################################################
+  # BCCSP (BlockChain Crypto Service Provider) section is used to select which
+  # crypto library implementation to use
+  #############################################################################
+  bccsp:
+    default: PKCS11
+    pkcs11:
+      Library: /usr/local/Cellar/softhsm/2.1.0/lib/softhsm/libsofthsm2.so
+      Pin: 98765432
+      Label: ForFabric
+      hash: SHA2
+      security: 256
+      filekeystore:
+        # The directory used for the software file-based keystore
+        keystore: msp/keystore
+
+And you can override relevant fields via environment variables as follows:
+
+.. code:: bash
+
+  FABRIC_CA_SERVER_BCCSP_DEFAULT=PKCS11
+  FABRIC_CA_SERVER_BCCSP_PKCS11_LIBRARY=/usr/local/Cellar/softhsm/2.1.0/lib/softhsm/libsofthsm2.so
+  FABRIC_CA_SERVER_BCCSP_PKCS11_PIN=98765432
+  FABRIC_CA_SERVER_BCCSP_PKCS11_LABEL=ForFabric
+
+`Back to Top`_
+
+File Formats
+------------
+
+Fabric CA server's configuration file format
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A default configuration file is created in the server's home directory
+(see `Fabric CA Server <#server>`__ section for more info). The following
+link shows a sample :doc:`Server configuration file <serverconfig>`.
+
+Fabric CA client's configuration file format
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A default configuration file is created in the client's home directory
+(see `Fabric CA Client <#client>`__ section for more info). The following
+link shows a sample :doc:`Client configuration file <clientconfig>`.
+
+`Back to Top`_
+
+Troubleshooting
+---------------
+
+1. If you see a ``Killed: 9`` error on OSX when trying to execute
+   ``fabric-ca-client`` or ``fabric-ca-server``, there is a long thread
+   describing this problem at https://github.com/golang/go/issues/19734.
+   The short answer is that to work around this issue, you can run the
+   following command::
+
+    # sudo ln -s /usr/bin/true /usr/local/bin/dsymutil
+
+2. The error ``[ERROR] No certificates found for provided serial and aki`` will occur
+   if the following sequence of events occurs:
+
+   a. You issue a `fabric-ca-client enroll` command, creating an enrollment certificate (i.e. an ECert).
+      This stores a copy of the ECert in the fabric-ca-server's database.
+   b. The fabric-ca-server's database is deleted and recreated, thus losing the ECert from step 'a'.
+      For example, this may happen if you stop and restart a docker container hosting the fabric-ca-server,
+      but your fabric-ca-server is using the default sqlite database and the database file is not stored
+      on a volume and is therefore not persistent.
+   c. You issue a `fabric-ca-client register` command or any other command which tries to use the ECert from
+      step 'a'.  In this case, since the database no longer contains the ECert, the
+      ``[ERROR] No certificates found for provided serial and aki`` will occur.
+
+   To resolve this error, you must enroll again by repeating step 'a'.  This will issue a new ECert
+   which will be stored in the current database.
+
+3. When sending multiple parallel requests to a Fabric CA Server cluster that uses shared sqlite3 databases,
+   the server occasionally returns a 'database locked' error. This is most probably because the database
+   transaction timed out while waiting for database lock (held by another cluster member) to be released.
+   This is an invalid configuration because sqlite is an embedded database, which means the Fabric CA server
+   cluster must share the same file via a shared file system, which introduces a SPoF (single point of failure),
+   which contradicts the purpose of cluster topology. The best practice is to use either Postgres or MySQL
+   databases in a cluster topology.
+
+4. Suppose an error similar to
+   ``Failed to deserialize creator identity, err The supplied identity is not valid, Verify() returned x509: certificate signed by unknown authority``
+   is returned by a peer or orderer when using an enrollment certificate issued by the Fabric CA Server.  This indicates that
+   the signing CA certificate used by the Fabric CA Server to issue certificates does not match a certificate in the `cacerts` or `intermediatecerts`
+   folder of the MSP used to make authorization checks.
+
+   The MSP which is used to make authorization checks depends on which operation you were performing when the error occurred.
+   For example, if you were trying to install chaincode on a peer, the local MSP on the file system of the peer is used;
+   otherwise, if you were performing some channel specific operation such as instantiating chaincode on a specific channel,
+   the MSP in the genesis block or the most recent configuration block of the channel is used.
+
+   To confirm that this is the problem, compare the AKI (Authority Key Identifier) of the enrollment certificate
+   to the SKI (Subject Key Identifier) of the certificate(s) in the `cacerts` and `intermediatecerts` folder of appropriate MSP.
+   The command `openssl x509 -in <PEM-file> -noout -text | grep -A1 "Authority Key Identifier"` will display the AKI and
+   `openssl x509 -in <PEM-file> -noout -text | grep -A1 "Subject Key Identifier"` will display the SKI.
+   If they are not equal, you have confirmed that this is the cause of the error.
+
+   This can happen for multiple reasons including:
+
+   a. You used `cryptogen` to generate your key material but did not start `fabric-ca-server` with the signing key and certificate generated
+      by `cryptogen`.
+
+      To resolve (assuming `FABRIC_CA_SERVER_HOME` is set to the home directory of your `fabric-ca-server`):
+
+      1. Stop `fabric-ca-server`.
+      2. Copy `crypto-config/peerOrganizations/<orgName>/ca/*pem` to `$FABRIC_CA_SERVER_HOME/ca-cert.pem`.
+      3. Copy `crypto-config/peerOrganizations/<orgName>/ca/*_sk` to `$FABRIC_CA_SERVER_HOME/msp/keystore/`.
+      4. Start `fabric-ca-server`.
+      5. Delete any previously issued enrollment certificates and get new certificates by enrolling again.
+
+   b. You deleted and recreated the CA signing key and certificate used by the Fabric CA Server after generating the genesis block.
+      This can happen if the Fabric CA Server is running in a docker container, the container was restarted, and its home directory
+      is not on a volume mount.  In this case, the Fabric CA Server will create a new CA signing key and certificate.
+
+      Assuming that you can not recover the original CA signing key, the only way to recover from this scenario is to update the
+      certificate in the `cacerts` (or `intermediatecerts`) of the appropriate MSPs to the new CA certificate.
+
 .. Licensed under Creative Commons Attribution 4.0 International License
    https://creativecommons.org/licenses/by/4.0/
+ƒ

@@ -1,34 +1,22 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package policies
 
 import (
+	"fmt"
+	"reflect"
+	"strconv"
 	"testing"
 
-	cb "github.com/hyperledger/fabric/protos/common"
-
 	"github.com/golang/protobuf/proto"
-	logging "github.com/op/go-logging"
+	cb "github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protos/msp"
 	"github.com/stretchr/testify/assert"
 )
-
-func init() {
-	logging.SetLevel(logging.DEBUG, "")
-}
 
 type mockProvider struct{}
 
@@ -45,19 +33,17 @@ func defaultProviders() map[int32]Provider {
 }
 
 func TestUnnestedManager(t *testing.T) {
-	m := NewManagerImpl("test", defaultProviders())
-	handlers, err := m.BeginPolicyProposals(t, []string{})
-	assert.NoError(t, err)
-	assert.Empty(t, handlers, "Should not have returned additional handlers")
-
-	policyNames := []string{"1", "2", "3"}
-
-	for _, policyName := range policyNames {
-		_, err := m.ProposePolicy(t, policyName, &cb.ConfigPolicy{Policy: &cb.Policy{Type: mockType}})
-		assert.NoError(t, err)
+	config := &cb.ConfigGroup{
+		Policies: map[string]*cb.ConfigPolicy{
+			"1": {Policy: &cb.Policy{Type: mockType}},
+			"2": {Policy: &cb.Policy{Type: mockType}},
+			"3": {Policy: &cb.Policy{Type: mockType}},
+		},
 	}
 
-	m.CommitProposals(t)
+	m, err := NewManagerImpl("test", defaultProviders(), config)
+	assert.NoError(t, err)
+	assert.NotNil(t, m)
 
 	_, ok := m.Manager([]string{"subGroup"})
 	assert.False(t, ok, "Should not have found a subgroup manager")
@@ -66,56 +52,51 @@ func TestUnnestedManager(t *testing.T) {
 	assert.True(t, ok, "Should have found the root manager")
 	assert.Equal(t, m, r)
 
-	for _, policyName := range policyNames {
+	assert.Len(t, m.policies, len(config.Policies))
+
+	for policyName := range config.Policies {
 		_, ok := m.GetPolicy(policyName)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 	}
 }
 
 func TestNestedManager(t *testing.T) {
-	m := NewManagerImpl("test", defaultProviders())
-	absPrefix := "/test/"
-	nesting1, err := m.BeginPolicyProposals(t, []string{"nest1"})
-	assert.NoError(t, err)
-	assert.Len(t, nesting1, 1, "Should not have returned exactly one additional manager")
-
-	nesting2, err := nesting1[0].BeginPolicyProposals(t, []string{"nest2a", "nest2b"})
-	assert.NoError(t, err)
-	assert.Len(t, nesting2, 2, "Should not have returned two one additional managers")
-
-	_, err = nesting2[0].BeginPolicyProposals(t, []string{})
-	assert.NoError(t, err)
-	_, err = nesting2[1].BeginPolicyProposals(t, []string{})
-	assert.NoError(t, err)
-
-	policyNames := []string{"n0a", "n0b", "n0c"}
-	for _, policyName := range policyNames {
-		_, err := m.ProposePolicy(t, policyName, &cb.ConfigPolicy{Policy: &cb.Policy{Type: mockType}})
-		assert.NoError(t, err)
+	config := &cb.ConfigGroup{
+		Policies: map[string]*cb.ConfigPolicy{
+			"n0a": {Policy: &cb.Policy{Type: mockType}},
+			"n0b": {Policy: &cb.Policy{Type: mockType}},
+			"n0c": {Policy: &cb.Policy{Type: mockType}},
+		},
+		Groups: map[string]*cb.ConfigGroup{
+			"nest1": {
+				Policies: map[string]*cb.ConfigPolicy{
+					"n1a": {Policy: &cb.Policy{Type: mockType}},
+					"n1b": {Policy: &cb.Policy{Type: mockType}},
+					"n1c": {Policy: &cb.Policy{Type: mockType}},
+				},
+				Groups: map[string]*cb.ConfigGroup{
+					"nest2a": {
+						Policies: map[string]*cb.ConfigPolicy{
+							"n2a_1": {Policy: &cb.Policy{Type: mockType}},
+							"n2a_2": {Policy: &cb.Policy{Type: mockType}},
+							"n2a_3": {Policy: &cb.Policy{Type: mockType}},
+						},
+					},
+					"nest2b": {
+						Policies: map[string]*cb.ConfigPolicy{
+							"n2b_1": {Policy: &cb.Policy{Type: mockType}},
+							"n2b_2": {Policy: &cb.Policy{Type: mockType}},
+							"n2b_3": {Policy: &cb.Policy{Type: mockType}},
+						},
+					},
+				},
+			},
+		},
 	}
 
-	n1PolicyNames := []string{"n1a", "n1b", "n1c"}
-	for _, policyName := range n1PolicyNames {
-		_, err := nesting1[0].ProposePolicy(t, policyName, &cb.ConfigPolicy{Policy: &cb.Policy{Type: mockType}})
-		assert.NoError(t, err)
-	}
-
-	n2aPolicyNames := []string{"n2a_1", "n2a_2", "n2a_3"}
-	for _, policyName := range n2aPolicyNames {
-		_, err := nesting2[0].ProposePolicy(t, policyName, &cb.ConfigPolicy{Policy: &cb.Policy{Type: mockType}})
-		assert.NoError(t, err)
-	}
-
-	n2bPolicyNames := []string{"n2b_1", "n2b_2", "n2b_3"}
-	for _, policyName := range n2bPolicyNames {
-		_, err := nesting2[1].ProposePolicy(t, policyName, &cb.ConfigPolicy{Policy: &cb.Policy{Type: mockType}})
-		assert.NoError(t, err)
-	}
-
-	nesting2[0].CommitProposals(t)
-	nesting2[1].CommitProposals(t)
-	nesting1[0].CommitProposals(t)
-	m.CommitProposals(t)
+	m, err := NewManagerImpl("nest0", defaultProviders(), config)
+	assert.NoError(t, err)
+	assert.NotNil(t, m)
 
 	r, ok := m.Manager([]string{})
 	assert.True(t, ok, "Should have found the root manager")
@@ -135,7 +116,8 @@ func TestNestedManager(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, n2b, n2bs)
 
-	for _, policyName := range policyNames {
+	absPrefix := PathSeparator + "nest0" + PathSeparator
+	for policyName := range config.Policies {
 		_, ok := m.GetPolicy(policyName)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
@@ -144,51 +126,111 @@ func TestNestedManager(t *testing.T) {
 		assert.True(t, ok, "Should have found absolute policy %s", absName)
 	}
 
-	for _, policyName := range n1PolicyNames {
+	for policyName := range config.Groups["nest1"].Policies {
 		_, ok := n1.GetPolicy(policyName)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
-		_, ok = m.GetPolicy(n1.BasePath() + "/" + policyName)
+		relPathFromBase := "nest1" + PathSeparator + policyName
+		_, ok = m.GetPolicy(relPathFromBase)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
 		for i, abs := range []Manager{n1, m} {
-			absName := absPrefix + n1.BasePath() + "/" + policyName
+			absName := absPrefix + relPathFromBase
 			_, ok = abs.GetPolicy(absName)
 			assert.True(t, ok, "Should have found absolutely policy for manager %d", i)
 		}
 	}
 
-	for _, policyName := range n2aPolicyNames {
+	for policyName := range config.Groups["nest1"].Groups["nest2a"].Policies {
 		_, ok := n2a.GetPolicy(policyName)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
-		_, ok = n1.GetPolicy(n2a.BasePath() + "/" + policyName)
+		relPathFromN1 := "nest2a" + PathSeparator + policyName
+		_, ok = n1.GetPolicy(relPathFromN1)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
-		_, ok = m.GetPolicy(n1.BasePath() + "/" + n2a.BasePath() + "/" + policyName)
+		relPathFromBase := "nest1" + PathSeparator + relPathFromN1
+		_, ok = m.GetPolicy(relPathFromBase)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
 		for i, abs := range []Manager{n2a, n1, m} {
-			absName := absPrefix + n1.BasePath() + "/" + n2a.BasePath() + "/" + policyName
+			absName := absPrefix + relPathFromBase
 			_, ok = abs.GetPolicy(absName)
 			assert.True(t, ok, "Should have found absolutely policy for manager %d", i)
 		}
 	}
 
-	for _, policyName := range n2bPolicyNames {
+	for policyName := range config.Groups["nest1"].Groups["nest2b"].Policies {
 		_, ok := n2b.GetPolicy(policyName)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
-		_, ok = n1.GetPolicy(n2b.BasePath() + "/" + policyName)
+		relPathFromN1 := "nest2b" + PathSeparator + policyName
+		_, ok = n1.GetPolicy(relPathFromN1)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
-		_, ok = m.GetPolicy(n1.BasePath() + "/" + n2b.BasePath() + "/" + policyName)
+		relPathFromBase := "nest1" + PathSeparator + relPathFromN1
+		_, ok = m.GetPolicy(relPathFromBase)
 		assert.True(t, ok, "Should have found policy %s", policyName)
 
 		for i, abs := range []Manager{n2b, n1, m} {
-			absName := absPrefix + n1.BasePath() + "/" + n2b.BasePath() + "/" + policyName
+			absName := absPrefix + relPathFromBase
 			_, ok = abs.GetPolicy(absName)
 			assert.True(t, ok, "Should have found absolutely policy for manager %d", i)
 		}
 	}
+}
+
+func TestPrincipalUniqueSet(t *testing.T) {
+	var principalSet PrincipalSet
+	addPrincipal := func(i int) {
+		principalSet = append(principalSet, &msp.MSPPrincipal{
+			PrincipalClassification: msp.MSPPrincipal_Classification(i),
+			Principal:               []byte(fmt.Sprintf("%d", i)),
+		})
+	}
+
+	addPrincipal(1)
+	addPrincipal(2)
+	addPrincipal(2)
+	addPrincipal(3)
+	addPrincipal(3)
+	addPrincipal(3)
+
+	for principal, plurality := range principalSet.UniqueSet() {
+		assert.Equal(t, int(principal.PrincipalClassification), plurality)
+		assert.Equal(t, fmt.Sprintf("%d", plurality), string(principal.Principal))
+	}
+
+	v := reflect.Indirect(reflect.ValueOf(msp.MSPPrincipal{}))
+	// Ensure msp.MSPPrincipal has only 2 fields.
+	// This is essential for 'UniqueSet' to work properly
+	// XXX This is a rather brittle check and brittle way to fix the test
+	// There seems to be an assumption that the number of fields in the proto
+	// struct matches the number of fields in the proto message
+	assert.Equal(t, 5, v.NumField())
+}
+
+func TestPrincipalSetContainingOnly(t *testing.T) {
+	var principalSets PrincipalSets
+	var principalSet PrincipalSet
+	for j := 0; j < 3; j++ {
+		for i := 0; i < 10; i++ {
+			principalSet = append(principalSet, &msp.MSPPrincipal{
+				PrincipalClassification: msp.MSPPrincipal_IDENTITY,
+				Principal:               []byte(fmt.Sprintf("%d", j*10+i)),
+			})
+		}
+		principalSets = append(principalSets, principalSet)
+		principalSet = nil
+	}
+
+	between20And30 := func(principal *msp.MSPPrincipal) bool {
+		n, _ := strconv.ParseInt(string(principal.Principal), 10, 32)
+		return n >= 20 && n <= 29
+	}
+
+	principalSets = principalSets.ContainingOnly(between20And30)
+
+	assert.Len(t, principalSets, 1)
+	assert.True(t, principalSets[0].ContainingOnly(between20And30))
 }

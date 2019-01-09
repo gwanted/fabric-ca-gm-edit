@@ -127,6 +127,14 @@ func ReadFile(file string) ([]byte, error) {
 
 // WriteFile writes a file
 func WriteFile(file string, buf []byte, perm os.FileMode) error {
+	dir := path.Dir(file)
+	// Create the directory if it doesn't exist
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		err = os.MkdirAll(dir, 0755)
+		if err != nil {
+			return errors.Wrapf(err, "Failed to create directory '%s' for file '%s'", dir, file)
+		}
+	}
 	return ioutil.WriteFile(file, buf, perm)
 }
 
@@ -170,8 +178,10 @@ func Unmarshal(from []byte, to interface{}, what string) error {
 //    which is the body of an HTTP request, though could be any arbitrary bytes.
 // @param cert The pem-encoded certificate
 // @param key The pem-encoded key
+// @param method http method of the request
+// @param uri URI of the request
 // @param body The body of an HTTP request
-func CreateToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, body []byte) (string, error) {
+func CreateToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, method, uri string, body []byte) (string, error) {
 	x509Cert, err := GetX509CertificateFromPEM(cert)
 	if err != nil {
 		return "", err
@@ -190,7 +200,7 @@ func CreateToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, body []byte) (stri
 			}
 	*/
 	case *ecdsa.PublicKey:
-		token, err = GenECDSAToken(csp, cert, key, body)
+		token, err = GenECDSAToken(csp, cert, key, method, uri, body)
 		if err != nil {
 			return "", err
 		}
@@ -224,14 +234,19 @@ func GenRSAToken(csp bccsp.BCCSP, cert []byte, key []byte, body []byte) (string,
 */
 
 //GenECDSAToken signs the http body and cert with ECDSA using EC private key
-func GenECDSAToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, body []byte) (string, error) {
+func GenECDSAToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, method, uri string, body []byte) (string, error) {
 	b64body := B64Encode(body)
 	b64cert := B64Encode(cert)
-	bodyAndcert := b64body + "." + b64cert
+	b64uri := B64Encode([]byte(uri))
+	payload := method + "." + b64uri + "." + b64body + "." + b64cert
 
-	digest, digestError := csp.Hash([]byte(bodyAndcert), &bccsp.SHAOpts{})
+	return genECDSAToken(csp, key, b64cert, payload)
+}
+
+func genECDSAToken(csp bccsp.BCCSP, key bccsp.Key, b64cert, payload string) (string, error) {
+	digest, digestError := csp.Hash([]byte(payload), &bccsp.SHAOpts{})
 	if digestError != nil {
-		return "", errors.WithMessage(digestError, fmt.Sprintf("Hash failed on '%s'", bodyAndcert))
+		return "", errors.WithMessage(digestError, fmt.Sprintf("Hash failed on '%s'", payload))
 	}
 
 	ecSignature, err := csp.Sign(key, digest, nil)
@@ -251,9 +266,7 @@ func GenECDSAToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, body []byte) (st
 
 // VerifyToken verifies token signed by either ECDSA or RSA and
 // returns the associated user ID
-func VerifyToken(csp bccsp.BCCSP, token string, body []byte) (*x509.Certificate, error) {
-
-	log.Infof("xxxxxx token: %s", token)
+func VerifyToken(csp bccsp.BCCSP, token string, method, uri string, body []byte, compMode1_3 bool) (*x509.Certificate, error) {
 
 	if csp == nil {
 		return nil, errors.New("BCCSP instance is not present")
@@ -267,8 +280,8 @@ func VerifyToken(csp bccsp.BCCSP, token string, body []byte) (*x509.Certificate,
 		return nil, errors.WithMessage(err, "Invalid base64 encoded signature in token")
 	}
 	b64Body := B64Encode(body)
-	sigString := b64Body + "." + b64Cert
-
+	b64uri := B64Encode([]byte(uri))
+	sigString := method + "." + b64uri + "." + b64Body + "." + b64Cert
 	log.Infof("xxx before csp .KeyImport csp : %T b64Body %s", csp, sigString)
 	sm2cert := ParseX509Certificate2Sm2(x509Cert)
 	pk2, err := csp.KeyImport(sm2cert, &bccsp.X509PublicKeyImportOpts{Temporary: true})
@@ -279,6 +292,7 @@ func VerifyToken(csp bccsp.BCCSP, token string, body []byte) (*x509.Certificate,
 	if pk2 == nil {
 		return nil, errors.New("Public Key Cannot be imported into BCCSP")
 	}
+
 	//bccsp.X509PublicKeyImportOpts
 	//Using default hash algo
 	digest, digestError := csp.Hash([]byte(sigString), &bccsp.SHA256Opts{})
@@ -287,6 +301,15 @@ func VerifyToken(csp bccsp.BCCSP, token string, body []byte) (*x509.Certificate,
 	}
 	log.Debugf("pk2 %T \n sig %T\n digest %s\n", pk2, sig, B64Encode(digest))
 	valid, validErr := csp.Verify(pk2, sig, digest, nil)
+	if compMode1_3 && !valid {
+		log.Debugf("Failed to verify token based on new authentication header requirements: %s", err)
+		sigString := b64Body + "." + b64Cert
+		digest, digestError := csp.Hash([]byte(sigString), &bccsp.SHAOpts{})
+		if digestError != nil {
+			return nil, errors.WithMessage(digestError, "Message digest failed")
+		}
+		valid, validErr = csp.Verify(pk2, sig, digest, nil)
+	}
 
 	if validErr != nil {
 		return nil, errors.WithMessage(validErr, "Token signature validation failure")
@@ -1004,4 +1027,27 @@ func IsGMConfig() bool {
 
 func SetProviderName(name string) {
 	providerName = name
+}
+
+// ErrorContains will check to see if an error occurred, if so it will check that it contains
+// the appropriate error message
+func ErrorContains(t *testing.T, err error, contains, msg string, args ...interface{}) {
+	if len(args) > 0 {
+		msg = fmt.Sprintf(msg, args)
+	}
+	if assert.Error(t, err, msg) {
+		assert.Contains(t, err.Error(), contains)
+	}
+}
+
+// ListContains looks through a comma separated list to see if a string exists
+func ListContains(list, find string) bool {
+	items := strings.Split(list, ",")
+	for _, item := range items {
+		item = strings.TrimPrefix(item, " ")
+		if item == find {
+			return true
+		}
+	}
+	return false
 }

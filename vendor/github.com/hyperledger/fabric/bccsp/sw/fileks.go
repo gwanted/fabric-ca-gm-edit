@@ -17,29 +17,26 @@ package sw
 
 import (
 	"bytes"
-	"io/ioutil"
-	"os"
-	"sync"
-
-	"errors"
-	"strings"
-
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
-	"github.com/tjfoc/gmsm/sm2"
-	"github.com/tjfoc/gmsm/sm4"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/utils"
-	// "github.com/hyperledger/fabric/common/config"
+	"github.com/tjfoc/gmsm/sm2"
+	"github.com/tjfoc/gmsm/sm4"
 )
 
 // NewFileBasedKeyStore instantiated a file-based key store at a given position.
-// The key store can be encrypted if a non-empty password is specifiec.
-// It can be also be set  as read only. In this case, any store operation
+// The key store can be encrypted if a non-empty password is specified.
+// It can be also be set as read only. In this case, any store operation
 // will be forbidden
 func NewFileBasedKeyStore(pwd []byte, path string, readOnly bool) (bccsp.KeyStore, error) {
 	ks := &fileBasedKeyStore{}
@@ -115,13 +112,14 @@ func (ks *fileBasedKeyStore) ReadOnly() bool {
 }
 
 // GetKey returns a key object whose SKI is the one passed.
-func (ks *fileBasedKeyStore) GetKey(ski []byte) (k bccsp.Key, err error) {
+func (ks *fileBasedKeyStore) GetKey(ski []byte) (bccsp.Key, error) {
 	// Validate arguments
 	if len(ski) == 0 {
 		return nil, errors.New("Invalid SKI. Cannot be of zero length.")
 	}
 
 	suffix := ks.getSuffix(hex.EncodeToString(ski))
+
 	switch suffix {
 	case "key":
 		// Load the key
@@ -129,10 +127,8 @@ func (ks *fileBasedKeyStore) GetKey(ski []byte) (k bccsp.Key, err error) {
 		if err != nil {
 			return nil, fmt.Errorf("Failed loading key [%x] [%s]", ski, err)
 		}
-		// if config.CurrentCrypto == "GM" {
+
 		return &gmsm4PrivateKey{key, false}, nil
-		// }
-		// return &aesPrivateKey{key, false}, nil
 	case "sk":
 		// Load the private key
 		key, err := ks.loadPrivateKey(hex.EncodeToString(ski))
@@ -322,7 +318,7 @@ func (ks *fileBasedKeyStore) storePrivateKey(alias string, privateKey interface{
 		return err
 	}
 
-	err = ioutil.WriteFile(ks.getPathForAlias(alias, "sk"), rawKey, 0700)
+	err = ioutil.WriteFile(ks.getPathForAlias(alias, "sk"), rawKey, 0600)
 	if err != nil {
 		logger.Errorf("Failed storing private key [%s]: [%s]", alias, err)
 		return err
@@ -338,7 +334,7 @@ func (ks *fileBasedKeyStore) storePublicKey(alias string, publicKey interface{})
 		return err
 	}
 
-	err = ioutil.WriteFile(ks.getPathForAlias(alias, "pk"), rawKey, 0700)
+	err = ioutil.WriteFile(ks.getPathForAlias(alias, "pk"), rawKey, 0600)
 	if err != nil {
 		logger.Errorf("Failed storing private key [%s]: [%s]", alias, err)
 		return err
@@ -348,7 +344,7 @@ func (ks *fileBasedKeyStore) storePublicKey(alias string, publicKey interface{})
 }
 
 func (ks *fileBasedKeyStore) storeKey(alias string, key []byte) error {
-	// if config.CurrentCrypto == "GM" {
+	// pem, err := utils.AEStoEncryptedPEM(key, ks.pwd)
 	if len(ks.pwd) == 0 {
 		ks.pwd = nil
 	}
@@ -359,24 +355,11 @@ func (ks *fileBasedKeyStore) storeKey(alias string, key []byte) error {
 		return err
 	}
 
-	err = ioutil.WriteFile(ks.getPathForAlias(alias, "key"), pem, 0700)
+	err = ioutil.WriteFile(ks.getPathForAlias(alias, "key"), pem, 0600)
 	if err != nil {
 		logger.Errorf("Failed storing key [%s]: [%s]", alias, err)
 		return err
 	}
-	// } else {
-	// 	pem, err := utils.AEStoEncryptedPEM(key, ks.pwd)
-	// 	if err != nil {
-	// 		logger.Errorf("Failed converting key to PEM [%s]: [%s]", alias, err)
-	// 		return err
-	// 	}
-
-	// 	err = ioutil.WriteFile(ks.getPathForAlias(alias, "key"), pem, 0700)
-	// 	if err != nil {
-	// 		logger.Errorf("Failed storing key [%s]: [%s]", alias, err)
-	// 		return err
-	// 	}
-	// }
 
 	return nil
 }
@@ -392,7 +375,7 @@ func (ks *fileBasedKeyStore) loadPrivateKey(alias string) (interface{}, error) {
 		return nil, err
 	}
 
-	// if config.CurrentCrypto == "GM" {
+	// privateKey, err := utils.PEMtoPrivateKey(raw, ks.pwd)
 	privateKey, err := sm2.ReadPrivateKeyFromMem(raw, nil)
 	if err != nil {
 		logger.Errorf("Failed parsing private key [%s]: [%s].", alias, err.Error())
@@ -401,15 +384,6 @@ func (ks *fileBasedKeyStore) loadPrivateKey(alias string) (interface{}, error) {
 	}
 
 	return privateKey, nil
-	// }
-	// privateKey, err := utils.PEMtoPrivateKey(raw, ks.pwd)
-	// if err != nil {
-	// 	logger.Errorf("Failed parsing private key [%s]: [%s].", alias, err.Error())
-
-	// 	return nil, err
-	// }
-
-	// return privateKey, nil
 }
 
 func (ks *fileBasedKeyStore) loadPublicKey(alias string) (interface{}, error) {
@@ -422,22 +396,14 @@ func (ks *fileBasedKeyStore) loadPublicKey(alias string) (interface{}, error) {
 
 		return nil, err
 	}
-	// if config.CurrentCrypto == "GM" {
+
+	// privateKey, err := utils.PEMtoPublicKey(raw, ks.pwd)
 	privateKey, err := sm2.ReadPublicKeyFromMem(raw, nil)
 	if err != nil {
 		logger.Errorf("Failed parsing private key [%s]: [%s].", alias, err.Error())
 
 		return nil, err
 	}
-
-	return privateKey, nil
-	// }
-	// privateKey, err := utils.PEMtoPublicKey(raw, ks.pwd)
-	// if err != nil {
-	// 	logger.Errorf("Failed parsing private key [%s]: [%s].", alias, err.Error())
-
-	// 	return nil, err
-	// }
 
 	return privateKey, nil
 }
@@ -453,7 +419,7 @@ func (ks *fileBasedKeyStore) loadKey(alias string) ([]byte, error) {
 		return nil, err
 	}
 
-	// if config.CurrentCrypto == "GM" {
+	// key, err := utils.PEMtoAES(pem, ks.pwd)
 	if len(ks.pwd) == 0 {
 		ks.pwd = nil
 	}
@@ -465,15 +431,6 @@ func (ks *fileBasedKeyStore) loadKey(alias string) ([]byte, error) {
 	}
 
 	return key, nil
-	// }
-	// key, err := utils.PEMtoAES(pem, ks.pwd)
-	// if err != nil {
-	// 	logger.Errorf("Failed parsing key [%s]: [%s]", alias, err)
-
-	// 	return nil, err
-	// }
-
-	// return key, nil
 }
 
 func (ks *fileBasedKeyStore) createKeyStoreIfNotExists() error {
@@ -509,7 +466,7 @@ func (ks *fileBasedKeyStore) openKeyStore() error {
 	if ks.isOpen {
 		return nil
 	}
-
+	ks.isOpen = true
 	logger.Debugf("KeyStore opened at [%s]...done", ks.path)
 
 	return nil

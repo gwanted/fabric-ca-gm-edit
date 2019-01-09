@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lib
@@ -22,33 +12,30 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/pkg/errors"
-
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/util"
-	"github.com/hyperledger/fabric/bccsp"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/client/credential"
+	"github.com/hyperledger/fabric-ca/lib/client/credential/idemix"
+	"github.com/hyperledger/fabric-ca/lib/client/credential/x509"
+	"github.com/hyperledger/fabric-ca/lib/common"
+	"github.com/hyperledger/fabric-ca/util"
+	"github.com/pkg/errors"
 )
-
-func newIdentity(client *Client, name string, key bccsp.Key, cert []byte) *Identity {
-	id := new(Identity)
-	id.name = name
-	id.ecert = newSigner(key, cert, id)
-	id.client = client
-	if client != nil {
-		id.CSP = client.csp
-	} else {
-		id.CSP = util.GetDefaultBCCSP()
-	}
-	return id
-}
 
 // Identity is fabric-ca's implementation of an identity
 type Identity struct {
 	name   string
-	ecert  *Signer
 	client *Client
-	CSP    bccsp.BCCSP
+	creds  []credential.Credential
+}
+
+// NewIdentity is the constructor for identity
+func NewIdentity(client *Client, name string, creds []credential.Credential) *Identity {
+	id := new(Identity)
+	id.name = name
+	id.client = client
+	id.creds = creds
+	return id
 }
 
 // GetName returns the identity name
@@ -61,13 +48,43 @@ func (i *Identity) GetClient() *Client {
 	return i.client
 }
 
+// GetIdemixCredential returns Idemix credential of this identity
+func (i *Identity) GetIdemixCredential() credential.Credential {
+	for _, cred := range i.creds {
+		if cred.Type() == idemix.CredType {
+			return cred
+		}
+	}
+	return nil
+}
+
+// GetX509Credential returns X509 credential of this identity
+func (i *Identity) GetX509Credential() credential.Credential {
+	for _, cred := range i.creds {
+		if cred.Type() == x509.CredType {
+			return cred
+		}
+	}
+	return nil
+}
+
 // GetECert returns the enrollment certificate signer for this identity
-func (i *Identity) GetECert() *Signer {
-	return i.ecert
+// Returns nil if the identity does not have a X509 credential
+func (i *Identity) GetECert() *x509.Signer {
+	for _, cred := range i.creds {
+		if cred.Type() == x509.CredType {
+			v, _ := cred.Val()
+			if v != nil {
+				s, _ := v.(*x509.Signer)
+				return s
+			}
+		}
+	}
+	return nil
 }
 
 // GetTCertBatch returns a batch of TCerts for this identity
-func (i *Identity) GetTCertBatch(req *api.GetTCertBatchRequest) ([]*Signer, error) {
+func (i *Identity) GetTCertBatch(req *api.GetTCertBatchRequest) ([]*x509.Signer, error) {
 	reqBody, err := util.Marshal(req, "GetTCertBatchRequest")
 	if err != nil {
 		return nil, err
@@ -152,7 +169,7 @@ func (i *Identity) Reenroll(req *api.ReenrollmentRequest) (*EnrollmentResponse, 
 	if err != nil {
 		return nil, err
 	}
-	var result enrollmentResponseNet
+	var result common.EnrollmentResponseNet
 	err = i.Post("reenroll", body, &result, nil)
 	if err != nil {
 		return nil, err
@@ -210,6 +227,22 @@ func (i *Identity) GenCRL(req *api.GenCRLRequest) (*api.GenCRLResponse, error) {
 	return &api.GenCRLResponse{CRL: crl}, nil
 }
 
+// GetCRI gets Idemix credential revocation information (CRI)
+func (i *Identity) GetCRI(req *api.GetCRIRequest) (*api.GetCRIResponse, error) {
+	log.Debugf("Entering identity.GetCRI %+v", req)
+	reqBody, err := util.Marshal(req, "GetCRIRequest")
+	if err != nil {
+		return nil, err
+	}
+	var result api.GetCRIResponse
+	err = i.Post("idemix/cri", reqBody, &result, nil)
+	if err != nil {
+		return nil, err
+	}
+	log.Debugf("Successfully generated CRI: %+v", req)
+	return &result, nil
+}
+
 // GetIdentity returns information about the requested identity
 func (i *Identity) GetIdentity(id, caname string) (*api.GetIDResponse, error) {
 	log.Debugf("Entering identity.GetIdentity %s", id)
@@ -226,7 +259,9 @@ func (i *Identity) GetIdentity(id, caname string) (*api.GetIDResponse, error) {
 // GetAllIdentities returns all identities that the caller is authorized to see
 func (i *Identity) GetAllIdentities(caname string, cb func(*json.Decoder) error) error {
 	log.Debugf("Entering identity.GetAllIdentities")
-	err := i.GetStreamResponse("identities", caname, "result.identities", cb)
+	queryParam := make(map[string]string)
+	queryParam["ca"] = caname
+	err := i.GetStreamResponse("identities", queryParam, "result.identities", cb)
 	if err != nil {
 		return err
 	}
@@ -403,12 +438,42 @@ func (i *Identity) RemoveAffiliation(req *api.RemoveAffiliationRequest) (*api.Af
 	return result, nil
 }
 
+// GetCertificates returns all certificates that the caller is authorized to see
+func (i *Identity) GetCertificates(req *api.GetCertificatesRequest, cb func(*json.Decoder) error) error {
+	log.Debugf("Entering identity.GetCertificates, sending request: %+v", req)
+
+	queryParam := make(map[string]string)
+	queryParam["id"] = req.ID
+	queryParam["aki"] = req.AKI
+	queryParam["serial"] = req.Serial
+	queryParam["revoked_start"] = req.Revoked.StartTime
+	queryParam["revoked_end"] = req.Revoked.EndTime
+	queryParam["expired_start"] = req.Expired.StartTime
+	queryParam["expired_end"] = req.Expired.EndTime
+	queryParam["notrevoked"] = strconv.FormatBool(req.NotRevoked)
+	queryParam["notexpired"] = strconv.FormatBool(req.NotExpired)
+	queryParam["ca"] = req.CAName
+	err := i.GetStreamResponse("certificates", queryParam, "result.certs", cb)
+	if err != nil {
+		return err
+	}
+
+	log.Debugf("Successfully completed getting certificates request")
+	return nil
+}
+
 // Store writes my identity info to disk
 func (i *Identity) Store() error {
 	if i.client == nil {
 		return errors.New("An identity with no client may not be stored")
 	}
-	return i.client.StoreMyIdentity(i.ecert.cert)
+	for _, cred := range i.creds {
+		err := cred.Store()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Get sends a get request to an endpoint
@@ -428,13 +493,17 @@ func (i *Identity) Get(endpoint, caname string, result interface{}) error {
 }
 
 // GetStreamResponse sends a request to an endpoint and streams the response
-func (i *Identity) GetStreamResponse(endpoint, caname, stream string, cb func(*json.Decoder) error) error {
+func (i *Identity) GetStreamResponse(endpoint string, queryParam map[string]string, stream string, cb func(*json.Decoder) error) error {
 	req, err := i.client.newGet(endpoint)
 	if err != nil {
 		return err
 	}
-	if caname != "" {
-		addQueryParm(req, "ca", caname)
+	if queryParam != nil {
+		for key, value := range queryParam {
+			if value != "" {
+				addQueryParm(req, key, value)
+			}
+		}
 	}
 	err = i.addTokenAuthHdr(req, nil)
 	if err != nil {
@@ -502,11 +571,14 @@ func (i *Identity) Post(endpoint string, reqBody []byte, result interface{}, que
 
 func (i *Identity) addTokenAuthHdr(req *http.Request, body []byte) error {
 	log.Debug("Adding token-based authorization header")
-	cert := i.ecert.cert
-	key := i.ecert.key
-	token, err := util.CreateToken(i.CSP, cert, key, body)
-	if err != nil {
-		return errors.WithMessage(err, "Failed to add token authorization header")
+	var token string
+	var err error
+	for _, cred := range i.creds {
+		token, err = cred.CreateToken(req, body)
+		if err != nil {
+			return errors.WithMessage(err, "Failed to add token authorization header")
+		}
+		break
 	}
 	req.Header.Set("authorization", token)
 	return nil

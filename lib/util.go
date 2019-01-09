@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lib
@@ -25,14 +15,16 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
-	"github.com/pkg/errors"
-
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/lib/spi"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/grantae/certinfo"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/spi"
+	"github.com/hyperledger/fabric-ca/util"
+	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 	"github.com/tjfoc/gmsm/sm2"
 )
@@ -183,6 +175,85 @@ func AffiliationDecoder(decoder *json.Decoder) error {
 	fmt.Printf("%s\n", aff.Name)
 	return nil
 }
+
+// CertificateDecoder is needed to keep track of state, to see how many certificates
+// have been returned for each enrollment ID.
+type CertificateDecoder struct {
+	certIDCount map[string]int
+	storePath   string
+}
+
+// NewCertificateDecoder returns decoder for certificates
+func NewCertificateDecoder(storePath string) *CertificateDecoder {
+	cd := &CertificateDecoder{}
+	cd.certIDCount = make(map[string]int)
+	cd.storePath = storePath
+	return cd
+}
+
+// CertificateDecoder decodes streams of data coming from the server
+func (cd *CertificateDecoder) CertificateDecoder(decoder *json.Decoder) error {
+	var cert certPEM
+	err := decoder.Decode(&cert)
+	if err != nil {
+		return err
+	}
+	block, rest := pem.Decode([]byte(cert.PEM))
+	if block == nil || len(rest) > 0 {
+		return errors.New("Certificate decoding error")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return err
+	}
+	enrollmentID := certificate.Subject.CommonName
+	if cd.storePath != "" {
+		err = cd.StoreCert(enrollmentID, cd.storePath, []byte(cert.PEM))
+		if err != nil {
+			return err
+		}
+	}
+
+	result, err := certinfo.CertificateText(certificate)
+	if err != nil {
+		return err
+	}
+	fmt.Printf(result)
+	return nil
+}
+
+// StoreCert stores the certificate on the file system
+func (cd *CertificateDecoder) StoreCert(enrollmentID, storePath string, cert []byte) error {
+	cd.certIDCount[enrollmentID] = cd.certIDCount[enrollmentID] + 1
+
+	err := os.MkdirAll(storePath, os.ModePerm)
+	if err != nil {
+		return err
+	}
+
+	var filePath string
+	singleCertName := fmt.Sprintf("%s.pem", enrollmentID)
+	switch cd.certIDCount[enrollmentID] {
+	case 1: // Only one certificate returned, don't need to append number to certificate file name
+		filePath = filepath.Join(storePath, singleCertName)
+	case 2: // Two certificates returned, rename the old certificate to have number at the end
+		err := os.Rename(filepath.Join(storePath, singleCertName), filepath.Join(storePath, fmt.Sprintf("%s-1.pem", enrollmentID)))
+		if err != nil {
+			return errors.WithMessage(err, fmt.Sprintf("Failed to rename certificate: %s", singleCertName))
+		}
+		filePath = filepath.Join(storePath, fmt.Sprintf("%s-%d.pem", enrollmentID, cd.certIDCount[enrollmentID]))
+	default:
+		filePath = filepath.Join(storePath, fmt.Sprintf("%s-%d.pem", enrollmentID, cd.certIDCount[enrollmentID]))
+	}
+
+	err = ioutil.WriteFile(filePath, cert, 0644)
+	if err != nil {
+		return errors.WithMessage(err, fmt.Sprintf("Failed to store certificate at: %s", storePath))
+	}
+
+	return nil
+}
+
 
 // SM2证书请求 转换 X509 证书请求
 func ParseSm2CertificateRequest2X509(sm2req *sm2.CertificateRequest) *x509.CertificateRequest {

@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package viperutil
@@ -87,21 +77,39 @@ func TestKafkaVersionDecode(t *testing.T) {
 		expected    sarama.KafkaVersion
 		errExpected bool
 	}{
+		{"0.8", sarama.KafkaVersion{}, true},
 		{"0.8.2.0", sarama.V0_8_2_0, false},
 		{"0.8.2.1", sarama.V0_8_2_1, false},
 		{"0.8.2.2", sarama.V0_8_2_2, false},
 		{"0.9.0.0", sarama.V0_9_0_0, false},
+		{"0.9", sarama.V0_9_0_0, false},
+		{"0.9.0", sarama.V0_9_0_0, false},
 		{"0.9.0.1", sarama.V0_9_0_1, false},
+		{"0.9.0.3", sarama.V0_9_0_1, false},
 		{"0.10.0.0", sarama.V0_10_0_0, false},
+		{"0.10", sarama.V0_10_0_0, false},
+		{"0.10.0", sarama.V0_10_0_0, false},
 		{"0.10.0.1", sarama.V0_10_0_1, false},
 		{"0.10.1.0", sarama.V0_10_1_0, false},
-		{"Unsupported", sarama.KafkaVersion{}, true},
+		{"0.10.2.0", sarama.V0_10_2_0, false},
+		{"0.10.2.1", sarama.V0_10_2_0, false},
+		{"0.10.2.2", sarama.V0_10_2_0, false},
+		{"0.10.2.3", sarama.V0_10_2_0, false},
+		{"0.11", sarama.V0_11_0_0, false},
+		{"0.11.0", sarama.V0_11_0_0, false},
+		{"0.11.0.0", sarama.V0_11_0_0, false},
+		{"1", sarama.V1_0_0_0, false},
+		{"1.0", sarama.V1_0_0_0, false},
+		{"1.0.0", sarama.V1_0_0_0, false},
+		{"1.0.1", sarama.V1_0_0_0, false},
+		{"2.0.0", sarama.V1_0_0_0, false},
+		{"Malformed", sarama.KafkaVersion{}, true},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.data, func(t *testing.T) {
 
-			data := fmt.Sprintf("---\nInner:\n    Version: %s", tc.data)
+			data := fmt.Sprintf("---\nInner:\n    Version: '%s'", tc.data)
 			err := config.ReadConfig(bytes.NewReader([]byte(data)))
 			if err != nil {
 				t.Fatalf("Error reading config: %s", err)
@@ -439,7 +447,8 @@ func TestStringFromFileEnv(t *testing.T) {
 
 func TestEnhancedExactUnmarshalKey(t *testing.T) {
 	type Nested struct {
-		Key string
+		Key     string
+		BoolVar bool
 	}
 
 	type nestedKey struct {
@@ -450,7 +459,8 @@ func TestEnhancedExactUnmarshalKey(t *testing.T) {
 		"Top:\n" +
 		"  Nested:\n" +
 		"    Nested:\n" +
-		"      Key: BAD\n"
+		"      Key: BAD\n" +
+		"      BoolVar: true\n"
 
 	envVar := "VIPERUTIL_TOP_NESTED_NESTED_KEY"
 	envVal := "GOOD"
@@ -477,4 +487,32 @@ func TestEnhancedExactUnmarshalKey(t *testing.T) {
 		t.Fatalf(`Expected: "%s", Actual: "%s"`, envVal, uconf.Nested.Key)
 	}
 
+	if uconf.Nested.BoolVar != true {
+		t.Fatalf(`Expected: "%t", Actual: "%t"`, true, uconf.Nested.BoolVar)
+	}
+
+}
+
+func TestDecodeOpaqueField(t *testing.T) {
+	yaml := `---
+Foo: bar
+Hello:
+  World: 42
+`
+	config := viper.New()
+	config.SetConfigType("yaml")
+	if err := config.ReadConfig(bytes.NewReader([]byte(yaml))); err != nil {
+		t.Fatalf("Error reading config: %s", err)
+	}
+	var conf struct {
+		Foo   string
+		Hello struct{ World int }
+	}
+	if err := EnhancedExactUnmarshal(config, &conf); err != nil {
+		t.Fatalf("Error unmashalling: %s", err)
+	}
+
+	if conf.Foo != "bar" || conf.Hello.World != 42 {
+		t.Fatalf("Incorrect decoding")
+	}
 }

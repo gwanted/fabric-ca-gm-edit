@@ -213,6 +213,7 @@ func DERToPrivateKey(der []byte) (key interface{}, err error) {
 	if key, err = x509.ParseECPrivateKey(der); err == nil {
 		return
 	}
+	
 	if key, err := sm2.ParsePKCS8UnecryptedPrivateKey(der); err == nil {
 		return key, nil
 	}

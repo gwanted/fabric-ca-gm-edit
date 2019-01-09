@@ -24,7 +24,7 @@ import (
 	"github.com/hyperledger/fabric/bccsp/gm"
 
 	"github.com/cloudflare/cfssl/signer"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/util"
 )
 
 //证书签名

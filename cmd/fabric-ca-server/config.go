@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package main
@@ -22,12 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pkg/errors"
-
 	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/fabric-ca-gm/lib"
-	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/lib"
+	calog "github.com/hyperledger/fabric-ca/lib/common/log"
+	"github.com/hyperledger/fabric-ca/lib/metadata"
+	"github.com/hyperledger/fabric-ca/util"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -170,8 +160,8 @@ registry:
        type: client
        affiliation: ""
        attrs:
-          hf.Registrar.Roles: "peer,orderer,client,user"
-          hf.Registrar.DelegateRoles: "peer,orderer,client,user"
+          hf.Registrar.Roles: "*"
+          hf.Registrar.DelegateRoles: "*"
           hf.Revoker: true
           hf.IntermediateCA: true
           hf.GenCRL: true
@@ -344,6 +334,9 @@ signing:
 ###########################################################################
 csr:
    cn: <<<COMMONNAME>>>
+   keyrequest:
+     algo: ecdsa
+     size: 256
    names:
       - C: US
         ST: "North Carolina"
@@ -356,6 +349,30 @@ csr:
    ca:
       expiry: 131400h
       pathlength: <<<PATHLENGTH>>>
+
+###########################################################################
+# Each CA can issue both X509 enrollment certificate as well as Idemix
+# Credential. This section specifies configuration for the issuer component
+# that is responsible for issuing Idemix credentials.
+###########################################################################
+idemix:
+  # Specifies pool size for revocation handles. A revocation handle is an unique identifier of an
+  # Idemix credential. The issuer will create a pool revocation handles of this specified size. When
+  # a credential is requested, issuer will get handle from the pool and assign it to the credential.
+  # Issuer will repopulate the pool with new handles when the last handle in the pool is used.
+  # A revocation handle and credential revocation information (CRI) are used to create non revocation proof
+  # by the prover to prove to the verifier that her credential is not revoked.
+  rhpoolsize: 1000
+
+  # The Idemix credential issuance is a two step process. First step is to  get a nonce from the issuer
+  # and second step is send credential request that is constructed using the nonce to the isuser to
+  # request a credential. This configuration property specifies expiration for the nonces. By default is
+  # nonces expire after 15 seconds. The value is expressed in the time.Duration format (see https://golang.org/pkg/time/#ParseDuration).
+  nonceexpiration: 15s
+
+  # Specifies interval at which expired nonces are removed from datastore. Default value is 15 minutes.
+  #  The value is expressed in the time.Duration format (see https://golang.org/pkg/time/#ParseDuration)
+  noncesweepinterval: 15m
 
 #############################################################################
 # BCCSP (BlockChain Crypto Service Provider) section is used to select which
@@ -380,7 +397,9 @@ bccsp:
 # Automatically generate <number-of-CAs> non-default CAs.  The names of these
 # additional CAs are "ca1", "ca2", ... "caN", where "N" is <number-of-CAs>
 # This is particularly useful in a development environment to quickly set up
-# multiple CAs.
+# multiple CAs. Note that, this config option is not applicable to intermediate CA server
+# i.e., Fabric CA server that is started with intermediate.parentserver.url config
+# option (-u command line option)
 #
 # 2) --cafiles <CA-config-files>
 # For each CA config file in the list, generate a separate signing CA.  Each CA
@@ -444,6 +463,18 @@ intermediate:
     client:
       certfile:
       keyfile:
+
+#############################################################################
+# CA configuration section
+#
+# Configure the number of incorrect password attempts are allowed for
+# identities. By default, the value of 'passwordattempts' is 10, which
+# means that 10 incorrect password attempts can be made before an identity get
+# locked out.
+#############################################################################
+cfg:
+  identities:
+    passwordattempts: 10
 `
 )
 
@@ -462,6 +493,11 @@ func (s *ServerCmd) configInit() (err error) {
 		return err
 	}
 
+	s.myViper.AutomaticEnv() // read in environment variables that match
+	logLevel := s.myViper.GetString("loglevel")
+	debug := s.myViper.GetBool("debug")
+	calog.SetLogLevel(logLevel, debug)
+
 	log.Debugf("Home directory: %s", s.homeDirectory)
 
 	// If the config file doesn't exist, create a default one
@@ -476,7 +512,6 @@ func (s *ServerCmd) configInit() (err error) {
 	}
 
 	// Read the config
-	s.myViper.AutomaticEnv() // read in environment variables that match
 	err = lib.UnmarshalConfig(s.cfg, s.myViper, s.cfgFileName, true)
 	if err != nil {
 		return err
@@ -547,7 +582,7 @@ func (s *ServerCmd) createDefaultConfigFile() error {
 	cfg = strings.Replace(cfg, "<<<ADMINPW>>>", pass, 1)
 	cfg = strings.Replace(cfg, "<<<MYHOST>>>", myhost, 1)
 	purl := s.myViper.GetString("intermediate.parentserver.url")
-	log.Debugf("parent server URL: '%s'", purl)
+	log.Debugf("parent server URL: '%s'", util.GetMaskedURL(purl))
 	if purl == "" {
 		// This is a root CA
 		cfg = strings.Replace(cfg, "<<<COMMONNAME>>>", "fabric-ca-server", 1)

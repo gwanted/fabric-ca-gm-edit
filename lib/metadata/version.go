@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package metadata
@@ -22,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
+	"github.com/hyperledger/fabric-ca/lib/dbutil"
 	"github.com/pkg/errors"
 )
 
@@ -30,16 +20,16 @@ import (
 // requires database migration
 const (
 	// IdentityLevel is the current level of identities
-	IdentityLevel = 1
+	IdentityLevel = 2
 	// AffiliationLevel is the current level of affiliations
-	AffiliationLevel = 0
+	AffiliationLevel = 1
 	// CertificateLevel is the current level of certificates
-	CertificateLevel = 0
+	CertificateLevel = 1
 )
 
 // Version specifies fabric-ca-client/fabric-ca-server version
 // It is defined by the Makefile and passed in with ldflags
-var Version string
+var Version = "1.4.0"
 
 // GetVersionInfo returns version information for the fabric-ca-client/fabric-ca-server
 func GetVersionInfo(prgName string) string {
@@ -71,6 +61,22 @@ var versionToLevelsMapping = []versionLevels{
 	{
 		version: "1.1.0",
 		levels:  &dbutil.Levels{Identity: 1, Affiliation: 1, Certificate: 1},
+	},
+	{
+		version: "1.2.0",
+		levels:  &dbutil.Levels{Identity: 1, Affiliation: 1, Certificate: 1, Credential: 1, RAInfo: 1, Nonce: 1},
+	},
+	{
+		version: "1.3.0",
+		levels:  &dbutil.Levels{Identity: 1, Affiliation: 1, Certificate: 1, Credential: 1, RAInfo: 1, Nonce: 1},
+	},
+	{
+		version: "1.3.1",
+		levels:  &dbutil.Levels{Identity: 2, Affiliation: 1, Certificate: 1, Credential: 1, RAInfo: 1, Nonce: 1},
+	},
+	{
+		version: "1.4.0",
+		levels:  &dbutil.Levels{Identity: 2, Affiliation: 1, Certificate: 1, Credential: 1, RAInfo: 1, Nonce: 1},
 	},
 }
 

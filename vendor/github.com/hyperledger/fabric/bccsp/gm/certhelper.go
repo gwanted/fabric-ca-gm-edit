@@ -16,14 +16,13 @@ limitations under the License.
 package gm
 
 import (
-	// "crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
 	"io"
 	"math/big"
 
-	"github.com/tjfoc/gmsm/sm2"
 	"github.com/hyperledger/fabric/bccsp"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 // //调用SM2接口生成SM2证书

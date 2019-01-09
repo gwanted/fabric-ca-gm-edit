@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lib
@@ -22,17 +12,17 @@ import (
 	"encoding/pem"
 	"time"
 
-	"github.com/pkg/errors"
-
 	"github.com/cloudflare/cfssl/config"
 	"github.com/cloudflare/cfssl/csr"
 	cferr "github.com/cloudflare/cfssl/errors"
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/signer"
-	"github.com/tjfoc/fabric-ca-gm/lib/spi"
-
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/caerrors"
+	"github.com/hyperledger/fabric-ca/lib/common"
+	"github.com/hyperledger/fabric-ca/lib/spi"
+	"github.com/hyperledger/fabric-ca/util"
+	"github.com/pkg/errors"
 	"github.com/tjfoc/gmsm/sm2"
 )
 
@@ -58,14 +48,6 @@ var (
 	organizationalUnitOID = asn1.ObjectIdentifier{2, 5, 4, 11}
 )
 
-// The enrollment response from the server
-type enrollmentResponseNet struct {
-	// Base64 encoded PEM-encoded ECert
-	Cert string
-	// The server information
-	ServerInfo serverInfoResponseNet
-}
-
 func newEnrollEndpoint(s *Server) *serverEndpoint {
 	return &serverEndpoint{
 		Methods:   []string{"POST"},
@@ -85,7 +67,7 @@ func newReenrollEndpoint(s *Server) *serverEndpoint {
 }
 
 // Handle an enroll request, guarded by basic authentication
-func enrollHandler(ctx *serverRequestContext) (interface{}, error) {
+func enrollHandler(ctx *serverRequestContextImpl) (interface{}, error) {
 	id, err := ctx.BasicAuthentication()
 	if err != nil {
 		return nil, err
@@ -102,7 +84,7 @@ func enrollHandler(ctx *serverRequestContext) (interface{}, error) {
 }
 
 // Handle a reenroll request, guarded by token authentication
-func reenrollHandler(ctx *serverRequestContext) (interface{}, error) {
+func reenrollHandler(ctx *serverRequestContextImpl) (interface{}, error) {
 	// Authenticate the caller
 	id, err := ctx.TokenAuthentication()
 	if err != nil {
@@ -112,7 +94,7 @@ func reenrollHandler(ctx *serverRequestContext) (interface{}, error) {
 }
 
 // Handle the common processing for enroll and reenroll
-func handleEnroll(ctx *serverRequestContext, id string) (interface{}, error) {
+func handleEnroll(ctx *serverRequestContextImpl, id string) (interface{}, error) {
 	var req api.EnrollmentRequestNet
 	err := ctx.ReadBody(&req)
 	if err != nil {
@@ -169,7 +151,7 @@ func handleEnroll(ctx *serverRequestContext, id string) (interface{}, error) {
 		return nil, errors.WithMessage(err, "Certificate signing failure")
 	}
 	// Add server info to the response
-	resp := &enrollmentResponseNet{
+	resp := &common.EnrollmentResponseNet{
 		Cert: util.B64Encode(cert),
 	}
 	err = ca.fillCAInfo(&resp.ServerInfo)
@@ -188,7 +170,7 @@ func handleEnroll(ctx *serverRequestContext, id string) (interface{}, error) {
 // Check to see that CSR values do not exceed the character limit
 // as specified in RFC 3280, page 103.
 // Set the OU fields of the request.
-func processSignRequest(id string, req *signer.SignRequest, ca *CA, ctx *serverRequestContext) error {
+func processSignRequest(id string, req *signer.SignRequest, ca *CA, ctx *serverRequestContextImpl) error {
 	// Decode and parse the request into a CSR so we can make checks
 	block, _ := pem.Decode([]byte(req.Request))
 	if block == nil {
@@ -262,9 +244,9 @@ func isRequestForCASigningCert(csrReq *x509.CertificateRequest, ca *CA, profile 
 			var rest []byte
 			var err error
 			if rest, err = asn1.Unmarshal(val.Value, &constraints); err != nil {
-				return false, newHTTPErr(400, ErrBadCSR, "Failed parsing CSR constraints: %s", err)
+				return false, caerrors.NewHTTPErr(400, caerrors.ErrBadCSR, "Failed parsing CSR constraints: %s", err)
 			} else if len(rest) != 0 {
-				return false, newHTTPErr(400, ErrBadCSR, "Trailing data after X.509 BasicConstraints")
+				return false, caerrors.NewHTTPErr(400, caerrors.ErrBadCSR, "Trailing data after X.509 BasicConstraints")
 			}
 			if constraints.IsCA {
 				log.Debug("Request is for a CA signing certificate as indicated in the CSR")

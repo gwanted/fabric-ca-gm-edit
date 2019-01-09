@@ -33,8 +33,6 @@ type Ledger interface {
 	GetBlocksIterator(startBlockNumber uint64) (ResultsIterator, error)
 	// Close closes the ledger
 	Close()
-	// Commit adds a new block
-	Commit(block *common.Block) error
 }
 
 // ResultsIterator - an iterator for query result set
@@ -44,6 +42,12 @@ type ResultsIterator interface {
 	Next() (QueryResult, error)
 	// Close releases resources occupied by the iterator
 	Close()
+}
+
+// QueryResultsIterator - an iterator for query result set
+type QueryResultsIterator interface {
+	ResultsIterator
+	GetBookmarkAndClose() string
 }
 
 // QueryResult - a general interface for supporting different types of query results. Actual types differ for different queries

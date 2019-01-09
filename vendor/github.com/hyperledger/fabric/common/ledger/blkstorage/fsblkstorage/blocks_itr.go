@@ -33,6 +33,8 @@ type blocksItr struct {
 }
 
 func newBlockItr(mgr *blockfileMgr, startBlockNum uint64) *blocksItr {
+	mgr.cpInfoCond.L.Lock()
+	defer mgr.cpInfoCond.L.Unlock()
 	return &blocksItr{mgr, mgr.cpInfo.lastBlockNumber, startBlockNum, nil, false, &sync.Mutex{}}
 }
 
@@ -77,6 +79,7 @@ func (itr *blocksItr) Next() (ledger.QueryResult, error) {
 		return nil, nil
 	}
 	if itr.stream == nil {
+		logger.Debugf("Initializing block stream for iterator. itr.maxBlockNumAvailable=%d", itr.maxBlockNumAvailable)
 		if err := itr.initStream(); err != nil {
 			return nil, err
 		}
@@ -91,11 +94,13 @@ func (itr *blocksItr) Next() (ledger.QueryResult, error) {
 
 // Close releases any resources held by the iterator
 func (itr *blocksItr) Close() {
+	itr.mgr.cpInfoCond.L.Lock()
+	defer itr.mgr.cpInfoCond.L.Unlock()
 	itr.closeMarkerLock.Lock()
 	defer itr.closeMarkerLock.Unlock()
 	itr.closeMarker = true
-	itr.mgr.cpInfoCond.L.Lock()
-	defer itr.mgr.cpInfoCond.L.Unlock()
 	itr.mgr.cpInfoCond.Broadcast()
-	itr.stream.close()
+	if itr.stream != nil {
+		itr.stream.close()
+	}
 }

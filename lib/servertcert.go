@@ -17,8 +17,9 @@ limitations under the License.
 package lib
 
 import (
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/caerrors"
+	tcert "github.com/hyperledger/fabric-ca/lib/tcert"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/pkg/errors"
 )
@@ -32,7 +33,7 @@ func newTCertEndpoint(s *Server) *serverEndpoint {
 }
 
 // Handle a tcert request
-func tcertHandler(ctx *serverRequestContext) (interface{}, error) {
+func tcertHandler(ctx *serverRequestContextImpl) (interface{}, error) {
 	// Authenticate caller
 	id, err := ctx.TokenAuthentication()
 	if err != nil {
@@ -62,13 +63,12 @@ func tcertHandler(ctx *serverRequestContext) (interface{}, error) {
 	// Get the prekey associated with the affiliation path
 	prekey, err := ca.keyTree.GetKey(affiliationPath)
 	if err != nil {
-		return nil, newHTTPErr(500, ErrNoPreKey, "Failed to get prekey for identity %s: %s", id, err)
+		return nil, caerrors.NewHTTPErr(500, caerrors.ErrNoPreKey, "Failed to get prekey for identity %s: %s", id, err)
 	}
 	// TODO: When the TCert library is based on BCCSP, we will pass the prekey
 	//       directly.  Converting the SKI to a string is a temporary kludge
 	//       which isn't correct.
 	prekeyStr := string(prekey.SKI())
-
 	// Call the tcert library to get the batch of tcerts
 	tcertReq := &tcert.GetTCertBatchRequest{}
 	tcertReq.Count = req.Count

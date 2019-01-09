@@ -18,9 +18,9 @@ package factory
 import (
 	"sync"
 
-	"github.com/pkg/errors"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/pkg/errors"
 )
 
 var (
@@ -59,7 +59,6 @@ type BCCSPFactory interface {
 func GetDefault() bccsp.BCCSP {
 	if defaultBCCSP == nil {
 		logger.Warning("Before using BCCSP, please call InitFactories(). Falling back to bootBCCSP.")
-		// if config.CurrentCrypto == "GM" {
 		bootBCCSPInitOnce.Do(func() {
 			var err error
 			// f := &SWFactory{}
@@ -69,16 +68,6 @@ func GetDefault() bccsp.BCCSP {
 				panic("BCCSP Internal error, failed initialization with GetDefaultOpts!")
 			}
 		})
-		// } else {
-		// 	bootBCCSPInitOnce.Do(func() {
-		// 		var err error
-		// 		f := &SWFactory{}
-		// 		bootBCCSP, err = f.Get(GetDefaultOpts())
-		// 		if err != nil {
-		// 			panic("BCCSP Internal error, failed initialization with GetDefaultOpts!")
-		// 		}
-		// 	})
-		// }
 		return bootBCCSP
 	}
 	return defaultBCCSP

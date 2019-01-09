@@ -24,15 +24,14 @@ import (
 	"crypto/rsa"
 	"reflect"
 
-	"github.com/cloudflare/cfssl/log"
-	"github.com/tjfoc/gmsm/sm2"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/utils"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 type aes256ImportKeyOptsKeyImporter struct{}
 
-func (*aes256ImportKeyOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
+func (*aes256ImportKeyOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (bccsp.Key, error) {
 	aesRaw, ok := raw.([]byte)
 	if !ok {
 		return nil, errors.New("Invalid raw material. Expected byte array.")
@@ -51,7 +50,7 @@ func (*aes256ImportKeyOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.Key
 
 type hmacImportKeyOptsKeyImporter struct{}
 
-func (*hmacImportKeyOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
+func (*hmacImportKeyOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (bccsp.Key, error) {
 	aesRaw, ok := raw.([]byte)
 	if !ok {
 		return nil, errors.New("Invalid raw material. Expected byte array.")
@@ -66,7 +65,7 @@ func (*hmacImportKeyOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyIm
 
 type ecdsaPKIXPublicKeyImportOptsKeyImporter struct{}
 
-func (*ecdsaPKIXPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
+func (*ecdsaPKIXPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (bccsp.Key, error) {
 	der, ok := raw.([]byte)
 	if !ok {
 		return nil, errors.New("Invalid raw material. Expected byte array.")
@@ -91,7 +90,7 @@ func (*ecdsaPKIXPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts 
 
 type ecdsaPrivateKeyImportOptsKeyImporter struct{}
 
-func (*ecdsaPrivateKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
+func (*ecdsaPrivateKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (bccsp.Key, error) {
 	der, ok := raw.([]byte)
 	if !ok {
 		return nil, errors.New("[ECDSADERPrivateKeyImportOpts] Invalid raw material. Expected byte array.")
@@ -116,7 +115,7 @@ func (*ecdsaPrivateKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bcc
 
 type ecdsaGoPublicKeyImportOptsKeyImporter struct{}
 
-func (*ecdsaGoPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
+func (*ecdsaGoPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (bccsp.Key, error) {
 	lowLevelKey, ok := raw.(*ecdsa.PublicKey)
 	if !ok {
 		return nil, errors.New("Invalid raw material. Expected *ecdsa.PublicKey.")
@@ -127,7 +126,7 @@ func (*ecdsaGoPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bc
 
 type rsaGoPublicKeyImportOptsKeyImporter struct{}
 
-func (*rsaGoPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
+func (*rsaGoPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (bccsp.Key, error) {
 	lowLevelKey, ok := raw.(*rsa.PublicKey)
 	if !ok {
 		return nil, errors.New("Invalid raw material. Expected *rsa.PublicKey.")
@@ -137,25 +136,17 @@ func (*rsaGoPublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccs
 }
 
 type x509PublicKeyImportOptsKeyImporter struct {
-	bccsp *impl
+	bccsp *CSP
 }
 
-func (ki *x509PublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (k bccsp.Key, err error) {
-	// if config.CurrentCrypto == "GM" {
+func (ki *x509PublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bccsp.KeyImportOpts) (bccsp.Key, error) {
 	sm2Cert, ok := raw.(*sm2.Certificate)
 	if !ok {
 		return nil, errors.New("Invalid raw material. Expected *x509.Certificate.")
 	}
-	pk := sm2Cert.PublicKey
-	log.Debugf("fucking again key is %T", pk)
-	// }else{
-	// x509Cert, ok := raw.(*x509.Certificate)
-	// if !ok {
-	// 	return nil, errors.New("Invalid raw material. Expected *x509.Certificate.")
-	// }
 
-	// pk = x509Cert.PublicKey
-	// }
+	pk := sm2Cert.PublicKey
+
 	switch pk.(type) {
 	case sm2.PublicKey:
 		fmt.Printf("bccsp gm keyimport pk is sm2.PublicKey")
@@ -168,20 +159,20 @@ func (ki *x509PublicKeyImportOptsKeyImporter) KeyImport(raw interface{}, opts bc
 			return nil, errors.New("MarshalSm2PublicKey error")
 		}
 
-		return ki.bccsp.keyImporters[reflect.TypeOf(&bccsp.GMSM2PublicKeyImportOpts{})].KeyImport(
+		return ki.bccsp.KeyImporters[reflect.TypeOf(&bccsp.GMSM2PublicKeyImportOpts{})].KeyImport(
 			der,
 			&bccsp.GMSM2PublicKeyImportOpts{Temporary: opts.Ephemeral()})
 	case *sm2.PublicKey:
 		fmt.Printf("bccsp gm keyimport pk is *sm2.PublicKey")
-		return ki.bccsp.keyImporters[reflect.TypeOf(&bccsp.GMSM2PublicKeyImportOpts{})].KeyImport(
+		return ki.bccsp.KeyImporters[reflect.TypeOf(&bccsp.GMSM2PublicKeyImportOpts{})].KeyImport(
 			pk,
 			&bccsp.GMSM2PublicKeyImportOpts{Temporary: opts.Ephemeral()})
 	case *ecdsa.PublicKey:
-		return ki.bccsp.keyImporters[reflect.TypeOf(&bccsp.ECDSAGoPublicKeyImportOpts{})].KeyImport(
+		return ki.bccsp.KeyImporters[reflect.TypeOf(&bccsp.ECDSAGoPublicKeyImportOpts{})].KeyImport(
 			pk,
 			&bccsp.ECDSAGoPublicKeyImportOpts{Temporary: opts.Ephemeral()})
 	case *rsa.PublicKey:
-		return ki.bccsp.keyImporters[reflect.TypeOf(&bccsp.RSAGoPublicKeyImportOpts{})].KeyImport(
+		return ki.bccsp.KeyImporters[reflect.TypeOf(&bccsp.RSAGoPublicKeyImportOpts{})].KeyImport(
 			pk,
 			&bccsp.RSAGoPublicKeyImportOpts{Temporary: opts.Ephemeral()})
 	default:

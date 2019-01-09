@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package lib
@@ -19,16 +9,14 @@ package lib
 import (
 	"fmt"
 	"net/url"
-	"strings"
-
-	"github.com/pkg/errors"
 
 	"github.com/cloudflare/cfssl/log"
-
-	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/lib/attr"
-	"github.com/tjfoc/fabric-ca-gm/lib/spi"
-	"github.com/tjfoc/fabric-ca-gm/util"
+	"github.com/hyperledger/fabric-ca/api"
+	"github.com/hyperledger/fabric-ca/lib/attr"
+	"github.com/hyperledger/fabric-ca/lib/caerrors"
+	"github.com/hyperledger/fabric-ca/lib/spi"
+	"github.com/hyperledger/fabric-ca/util"
+	"github.com/pkg/errors"
 )
 
 func newRegisterEndpoint(s *Server) *serverEndpoint {
@@ -41,7 +29,15 @@ func newRegisterEndpoint(s *Server) *serverEndpoint {
 }
 
 // Handle a register request
-func registerHandler(ctx *serverRequestContext) (interface{}, error) {
+func registerHandler(ctx *serverRequestContextImpl) (interface{}, error) {
+	ca, err := ctx.GetCA()
+	if err != nil {
+		return nil, err
+	}
+	return register(ctx, ca)
+}
+
+func register(ctx ServerRequestContext, ca *CA) (interface{}, error) {
 	// Read request body
 	var req api.RegistrationRequestNet
 	err := ctx.ReadBody(&req)
@@ -50,14 +46,12 @@ func registerHandler(ctx *serverRequestContext) (interface{}, error) {
 	}
 	// Authenticate
 	callerID, err := ctx.TokenAuthentication()
-	log.Debugf("Received registration request from %s: %v", callerID, &req)
 	if err != nil {
 		return nil, err
 	}
-	// Get the target CA
-	ca, err := ctx.GetCA()
-	if err != nil {
-		return nil, err
+	log.Debugf("Received registration request from %s: %v", callerID, &req)
+	if ctx.IsLDAPEnabled() {
+		return nil, caerrors.NewHTTPErr(403, caerrors.ErrInvalidLDAPAction, "Registration is not supported when using LDAP")
 	}
 	// Register User
 	secret, err := registerUser(&req.RegistrationRequest, callerID, ca, ctx)
@@ -72,7 +66,7 @@ func registerHandler(ctx *serverRequestContext) (interface{}, error) {
 }
 
 // RegisterUser will register a user and return the secret
-func registerUser(req *api.RegistrationRequest, registrar string, ca *CA, ctx *serverRequestContext) (string, error) {
+func registerUser(req *api.RegistrationRequest, registrar string, ca *CA, ctx ServerRequestContext) (string, error) {
 	var err error
 	var registrarUser spi.User
 
@@ -84,7 +78,7 @@ func registerUser(req *api.RegistrationRequest, registrar string, ca *CA, ctx *s
 	normalizeRegistrationRequest(req, registrarUser)
 
 	// Check the permissions of member named 'registrar' to perform this registration
-	err = canRegister(registrarUser, req, ctx)
+	err = canRegister(registrarUser, req, ca, ctx)
 	if err != nil {
 		log.Debugf("Registration of '%s' failed: %s", req.Name, err)
 		return "", err
@@ -96,7 +90,7 @@ func registerUser(req *api.RegistrationRequest, registrar string, ca *CA, ctx *s
 		return "", errors.WithMessage(err, fmt.Sprintf("Registration of '%s' failed", req.Name))
 	}
 	// Set the location header to the URI of the identity that was created by the registration request
-	ctx.resp.Header().Set("Location", fmt.Sprintf("%sidentities/%s", apiPathPrefix, url.PathEscape(req.Name)))
+	ctx.GetResp().Header().Set("Location", fmt.Sprintf("%sidentities/%s", apiPathPrefix, url.PathEscape(req.Name)))
 	return secret, nil
 }
 
@@ -115,21 +109,24 @@ func normalizeRegistrationRequest(req *api.RegistrationRequest, registrar spi.Us
 	}
 }
 
-func validateAffiliation(req *api.RegistrationRequest, ctx *serverRequestContext) error {
-	log.Debug("Validate Affiliation")
-	err := ctx.ContainsAffiliation(req.Affiliation)
+func validateAffiliation(req *api.RegistrationRequest, ca *CA, ctx ServerRequestContext) error {
+	affiliation := req.Affiliation
+	log.Debugf("Validating affiliation: %s", affiliation)
+	err := ctx.ContainsAffiliation(affiliation)
 	if err != nil {
 		return err
 	}
-	return nil
-}
 
-func validateID(req *api.RegistrationRequest, ca *CA) error {
-	log.Debug("Validate ID")
-	err := isValidAffiliation(req.Affiliation, ca)
-	if err != nil {
-		return err
+	// If requested affiliation is for root then don't need to do lookup in affiliation's table
+	if affiliation == "" {
+		return nil
 	}
+
+	_, err = ca.registry.GetAffiliation(affiliation)
+	if err != nil {
+		return errors.WithMessage(err, fmt.Sprintf("Failed getting affiliation '%s'", affiliation))
+	}
+
 	return nil
 }
 
@@ -178,59 +175,22 @@ func registerUserID(req *api.RegistrationRequest, ca *CA) (string, error) {
 	return req.Secret, nil
 }
 
-func isValidAffiliation(affiliation string, ca *CA) error {
-	log.Debugf("Validating affiliation: %s", affiliation)
-
-	// If requested affiliation is for root then don't need to do lookup in affiliation's table
-	if affiliation == "" {
-		return nil
-	}
-
-	_, err := ca.registry.GetAffiliation(affiliation)
-	if err != nil {
-		return errors.WithMessage(err, fmt.Sprintf("Failed getting affiliation '%s'", affiliation))
-	}
-
-	return nil
-}
-
-func canRegister(registrar spi.User, req *api.RegistrationRequest, ctx *serverRequestContext) error {
+func canRegister(registrar spi.User, req *api.RegistrationRequest, ca *CA, ctx ServerRequestContext) error {
 	log.Debugf("canRegister - Check to see if user '%s' can register", registrar.GetName())
 
-	var roles []string
-	rolesStr, isRegistrar, err := ctx.isRegistrar()
+	err := ctx.CanActOnType(req.Type)
 	if err != nil {
 		return err
 	}
-	if !isRegistrar {
-		return errors.Errorf("'%s' does not have authority to register identities", registrar)
-	}
-	if rolesStr != "" {
-		roles = strings.Split(rolesStr, ",")
-	} else {
-		roles = make([]string, 0)
-	}
-	if req.Type == "" {
-		req.Type = "client"
-	}
-	if !util.StrContained(req.Type, roles) {
-		return fmt.Errorf("Identity '%s' may not register type '%s'", registrar, req.Type)
-	}
-
 	// Check that the affiliation requested is of the appropriate level
-	err = validateAffiliation(req, ctx)
+	err = validateAffiliation(req, ca, ctx)
 	if err != nil {
 		return fmt.Errorf("Registration of '%s' failed in affiliation validation: %s", req.Name, err)
 	}
 
-	err = validateID(req, ctx.ca)
-	if err != nil {
-		return errors.WithMessage(err, fmt.Sprintf("Registration of '%s' to validate", req.Name))
-	}
-
 	err = attr.CanRegisterRequestedAttributes(req.Attributes, nil, registrar)
 	if err != nil {
-		return newAuthErr(ErrRegAttrAuth, "Failed to register attribute: %s", err)
+		return caerrors.NewAuthorizationErr(caerrors.ErrRegAttrAuth, "Failed to register attribute: %s", err)
 	}
 
 	return nil

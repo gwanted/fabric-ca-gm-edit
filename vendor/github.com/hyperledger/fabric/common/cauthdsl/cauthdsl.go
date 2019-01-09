@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package cauthdsl
@@ -24,21 +14,43 @@ import (
 	"github.com/hyperledger/fabric/msp"
 	cb "github.com/hyperledger/fabric/protos/common"
 	mb "github.com/hyperledger/fabric/protos/msp"
-
-	"github.com/op/go-logging"
+	"go.uber.org/zap/zapcore"
 )
 
 var cauthdslLogger = flogging.MustGetLogger("cauthdsl")
 
-// compile recursively builds a go evaluatable function corresponding to the policy specified
-func compile(policy *cb.SignaturePolicy, identities []*mb.MSPPrincipal, deserializer msp.IdentityDeserializer) (func([]*cb.SignedData, []bool) bool, error) {
+// deduplicate removes any duplicated identities while otherwise preserving identity order
+func deduplicate(sds []IdentityAndSignature) []IdentityAndSignature {
+	ids := make(map[string]struct{})
+	result := make([]IdentityAndSignature, 0, len(sds))
+	for i, sd := range sds {
+		identity, err := sd.Identity()
+		if err != nil {
+			cauthdslLogger.Errorf("Principal deserialization failure (%s) for identity %d", err, i)
+			continue
+		}
+		key := identity.GetIdentifier().Mspid + identity.GetIdentifier().Id
+
+		if _, ok := ids[key]; ok {
+			cauthdslLogger.Warningf("De-duplicating identity [%s] at index %d in signature set", key, i)
+		} else {
+			result = append(result, sd)
+			ids[key] = struct{}{}
+		}
+	}
+	return result
+}
+
+// compile recursively builds a go evaluatable function corresponding to the policy specified, remember to call deduplicate on identities before
+// passing them to this function for evaluation
+func compile(policy *cb.SignaturePolicy, identities []*mb.MSPPrincipal, deserializer msp.IdentityDeserializer) (func([]IdentityAndSignature, []bool) bool, error) {
 	if policy == nil {
 		return nil, fmt.Errorf("Empty policy element")
 	}
 
 	switch t := policy.Type.(type) {
 	case *cb.SignaturePolicy_NOutOf_:
-		policies := make([]func([]*cb.SignedData, []bool) bool, len(t.NOutOf.Rules))
+		policies := make([]func([]IdentityAndSignature, []bool) bool, len(t.NOutOf.Rules))
 		for i, policy := range t.NOutOf.Rules {
 			compiledPolicy, err := compile(policy, identities, deserializer)
 			if err != nil {
@@ -47,7 +59,7 @@ func compile(policy *cb.SignaturePolicy, identities []*mb.MSPPrincipal, deserial
 			policies[i] = compiledPolicy
 
 		}
-		return func(signedData []*cb.SignedData, used []bool) bool {
+		return func(signedData []IdentityAndSignature, used []bool) bool {
 			grepKey := time.Now().UnixNano()
 			cauthdslLogger.Debugf("%p gate %d evaluation starts", signedData, grepKey)
 			verified := int32(0)
@@ -73,23 +85,20 @@ func compile(policy *cb.SignaturePolicy, identities []*mb.MSPPrincipal, deserial
 			return nil, fmt.Errorf("identity index out of range, requested %v, but identies length is %d", t.SignedBy, len(identities))
 		}
 		signedByID := identities[t.SignedBy]
-		return func(signedData []*cb.SignedData, used []bool) bool {
+		return func(signedData []IdentityAndSignature, used []bool) bool {
 			cauthdslLogger.Debugf("%p signed by %d principal evaluation starts (used %v)", signedData, t.SignedBy, used)
-
 			for i, sd := range signedData {
 				if used[i] {
 					cauthdslLogger.Debugf("%p skipping identity %d because it has already been used", signedData, i)
 					continue
 				}
-				if cauthdslLogger.IsEnabledFor(logging.DEBUG) {
+				if cauthdslLogger.IsEnabledFor(zapcore.DebugLevel) {
 					// Unlike most places, this is a huge print statement, and worth checking log level before create garbage
 					cauthdslLogger.Debugf("%p processing identity %d with bytes of %x", signedData, i, sd.Identity)
 				}
-
-				identity, err := deserializer.DeserializeIdentity(sd.Identity)
-
+				identity, err := sd.Identity()
 				if err != nil {
-					cauthdslLogger.Errorf("Principal deserialization failure (%s) for identity %x", err, sd.Identity)
+					cauthdslLogger.Errorf("Principal deserialization failure (%s) for identity %d", err, i)
 					continue
 				}
 				err = identity.SatisfiesPrincipal(signedByID)
@@ -98,7 +107,7 @@ func compile(policy *cb.SignaturePolicy, identities []*mb.MSPPrincipal, deserial
 					continue
 				}
 				cauthdslLogger.Debugf("%p principal matched by identity %d", signedData, i)
-				err = identity.Verify(sd.Data, sd.Signature)
+				err = sd.Verify()
 				if err != nil {
 					cauthdslLogger.Debugf("%p signature for identity %d is invalid: %s", signedData, i, err)
 					continue
