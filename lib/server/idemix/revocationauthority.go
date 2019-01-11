@@ -8,7 +8,7 @@ package idemix
 
 import (
 	"bytes"
-	"crypto/ecdsa"
+	// "crypto/ecdsa"
 	"fmt"
 
 	"github.com/cloudflare/cfssl/log"
@@ -18,6 +18,7 @@ import (
 	"github.com/hyperledger/fabric/idemix"
 	"github.com/jmoiron/sqlx"
 	"github.com/pkg/errors"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 const (
@@ -49,7 +50,7 @@ type RevocationAuthority interface {
 	// Epoch returns epoch value of the latest CRI
 	Epoch() (int, error)
 	// PublicKey returns revocation authority's public key
-	PublicKey() *ecdsa.PublicKey
+	PublicKey() *sm2.PublicKey
 }
 
 // RevocationAuthorityInfo is the revocation authority information record that is
@@ -195,7 +196,7 @@ func (ra *revocationAuthority) Epoch() (int, error) {
 }
 
 // PublicKey returns revocation authority's public key
-func (ra *revocationAuthority) PublicKey() *ecdsa.PublicKey {
+func (ra *revocationAuthority) PublicKey() *sm2.PublicKey {
 	return &ra.key.GetKey().PublicKey
 }
 

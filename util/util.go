@@ -304,7 +304,7 @@ func VerifyToken(csp bccsp.BCCSP, token string, method, uri string, body []byte,
 	if compMode1_3 && !valid {
 		log.Debugf("Failed to verify token based on new authentication header requirements: %s", err)
 		sigString := b64Body + "." + b64Cert
-		digest, digestError := csp.Hash([]byte(sigString), &bccsp.SHAOpts{})
+		digest, digestError := csp.Hash([]byte(sigString), &bccsp.SHA256Opts{})
 		if digestError != nil {
 			return nil, errors.WithMessage(digestError, "Message digest failed")
 		}

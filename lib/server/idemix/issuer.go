@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package idemix
 
 import (
-	"crypto/x509"
+	// "crypto/x509"
 	"encoding/pem"
 	"fmt"
 	"reflect"
@@ -27,6 +27,7 @@ import (
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/idemix"
 	"github.com/pkg/errors"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 // Issuer is the interface to the Issuer for external components
@@ -149,7 +150,7 @@ func (i *issuer) RevocationPublicKey() ([]byte, error) {
 		return nil, errors.New("Issuer is not initialized")
 	}
 	rpk := i.RevocationAuthority().PublicKey()
-	encodedPubKey, err := x509.MarshalPKIXPublicKey(rpk)
+	encodedPubKey, err := sm2.MarshalPKIXPublicKey(rpk)
 	if err != nil {
 		return nil, errors.Wrapf(err, "Failed to encode revocation authority public key of the issuer %s", i.Name())
 	}
