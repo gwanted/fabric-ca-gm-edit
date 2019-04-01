@@ -42,7 +42,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cloudflare/cfssl/log"
 	"github.com/tjfoc/gmsm/sm3"
 	"golang.org/x/crypto/ripemd160"
 	"golang.org/x/crypto/sha3"
@@ -98,7 +97,7 @@ func marshalPublicKey(pub interface{}) (publicKeyBytes []byte, publicKeyAlgorith
 		publicKeyBytes = elliptic.Marshal(pub.Curve, pub.X, pub.Y)
 		oid, ok := oidFromNamedCurve(pub.Curve)
 		if !ok {
-			return nil, pkix.AlgorithmIdentifier{}, errors.New("x509: unsupported elliptic curve1111")
+			return nil, pkix.AlgorithmIdentifier{}, errors.New("x509: unsupported elliptic curve")
 		}
 		publicKeyAlgorithm.Algorithm = oidPublicKeyECDSA
 		var paramBytes []byte
@@ -952,7 +951,6 @@ func (c *Certificate) CheckSignatureFrom(parent *Certificate) error {
 	}
 
 	if parent.PublicKeyAlgorithm == UnknownPublicKeyAlgorithm {
-		log.Debugf("sjsjsjsj3333 %s",ErrUnsupportedAlgorithm)
 		return ErrUnsupportedAlgorithm
 	}
 
@@ -986,12 +984,10 @@ func checkSignature(algo SignatureAlgorithm, signed, signature []byte, publicKey
 	case SM2WithSM3: // SM3WithRSA reserve
 		hashType = SM3
 	default:
-		log.Debugf("sjsjsjsj2222 %s",ErrUnsupportedAlgorithm)
 		return ErrUnsupportedAlgorithm
 	}
 
 	if !hashType.Available() {
-		log.Debugf("sjsjsjsj1111 %s",ErrUnsupportedAlgorithm)
 		return ErrUnsupportedAlgorithm
 	}
 	h := hashType.New()
@@ -1056,18 +1052,17 @@ func checkSignature(algo SignatureAlgorithm, signed, signature []byte, publicKey
 			return errors.New("x509: ECDSA signature contained zero or negative values")
 		}
 		switch pub.Curve {
-			case P256Sm2():
-				if !Verify(&PublicKey{
-					Curve: pub.Curve,
-					X:     pub.X,
-					Y:     pub.Y,
-				}, digest, ecdsaSig.R, ecdsaSig.S) {
-					return errors.New("x509: SM2 verification failure")
-				}
-			return
+		case P256Sm2():
+			if !Verify(&PublicKey{
+				Curve: pub.Curve,
+				X:     pub.X,
+				Y:     pub.Y,
+			}, digest, ecdsaSig.R, ecdsaSig.S) {
+				return errors.New("x509: SM2 verification failure")
+			}
 		}
+		return
 	}
-	log.Debugf("sjsjsjsj %s",ErrUnsupportedAlgorithm)
 	return ErrUnsupportedAlgorithm
 }
 
@@ -1209,7 +1204,6 @@ func parsePublicKey(algo PublicKeyAlgorithm, keyData *publicKeyInfo) (interface{
 			X:     x,
 			Y:     y,
 		}
-		log.Debugf("holy shit ! X=%d Y=%d cruve=%v",x,y,*namedCurveOID)
 		return pub, nil
 	default:
 		return nil, nil
@@ -2420,10 +2414,8 @@ func parseCertificateRequest(in *certificateRequest) (*CertificateRequest, error
 	var err error
 	out.PublicKey, err = parsePublicKey(out.PublicKeyAlgorithm, &in.TBSCSR.PublicKey)
 	if err != nil {
-		log.Debugf("out public  error %s", err.Error())
 		return nil, err
 	}
-	log.Debugf("out public   %v", out.PublicKey)
 
 	var subject pkix.RDNSequence
 	if rest, err := asn1.Unmarshal(in.TBSCSR.Subject.FullBytes, &subject); err != nil {
@@ -2458,7 +2450,7 @@ func (c *CertificateRequest) CheckSignature() error {
 func ReadCertificateRequestFromMem(data []byte) (*CertificateRequest, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("failed to decode certificate request %v", data)
+		return nil, errors.New("failed to decode certificate request")
 	}
 	return ParseCertificateRequest(block.Bytes)
 }
@@ -2506,10 +2498,9 @@ func CreateCertificateRequestToPem(FileName string, template *CertificateRequest
 }
 
 func ReadCertificateFromMem(data []byte) (*Certificate, error) {
-	log.Debugf("kidding1 %v", data)
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("failed to decode certificate1 request %v", data)
+		return nil, errors.New("failed to decode certificate request")
 	}
 	return ParseCertificate(block.Bytes)
 }
@@ -2519,7 +2510,6 @@ func ReadCertificateFromPem(FileName string) (*Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Debugf("kidding %v", data)
 	return ReadCertificateFromMem(data)
 }
 
