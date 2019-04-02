@@ -439,11 +439,12 @@ func LoadX509KeyPairSM2(certFile, keyFile string, csp bccsp.BCCSP) (*gtls.Certif
 		return nil, errors.Errorf("Failed to find \"CERTIFICATE\" PEM block in file %s after skipping PEM blocks of the following types: %v", certFile, skippedBlockTypes)
 	}
 
-	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	sm2Cert, err := sm2.ParseCertificate(cert.Certificate[0])
 	if err != nil {
 		return nil, err
 	}
 
+	x509Cert := gm.ParseSm2Certificate2X509(sm2Cert)
 	_, cert.PrivateKey, err = GetSignerFromCert(x509Cert, csp)
 	if err != nil {
 		if keyFile != "" {
