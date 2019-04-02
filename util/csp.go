@@ -20,7 +20,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
-	// "crypto/tls"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -351,7 +351,63 @@ func ImportBCCSPKeyFromPEM(keyFile string, myCSP bccsp.BCCSP, temporary bool) (b
 //
 // This function originated from crypto/tls/tls.go and was adapted to use a
 // BCCSP Signer
-func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*gtls.Certificate, error) {
+func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*tls.Certificate, error) {
+
+	certPEMBlock, err := ioutil.ReadFile(certFile)
+	if err != nil {
+		return nil, err
+	}
+
+	cert := &tls.Certificate{}
+	var skippedBlockTypes []string
+	for {
+		var certDERBlock *pem.Block
+		certDERBlock, certPEMBlock = pem.Decode(certPEMBlock)
+		if certDERBlock == nil {
+			break
+		}
+		if certDERBlock.Type == "CERTIFICATE" {
+			cert.Certificate = append(cert.Certificate, certDERBlock.Bytes)
+		} else {
+			skippedBlockTypes = append(skippedBlockTypes, certDERBlock.Type)
+		}
+	}
+
+	if len(cert.Certificate) == 0 {
+		if len(skippedBlockTypes) == 0 {
+			return nil, errors.Errorf("Failed to find PEM block in file %s", certFile)
+		}
+		if len(skippedBlockTypes) == 1 && strings.HasSuffix(skippedBlockTypes[0], "PRIVATE KEY") {
+			return nil, errors.Errorf("Failed to find certificate PEM data in file %s, but did find a private key; PEM inputs may have been switched", certFile)
+		}
+		return nil, errors.Errorf("Failed to find \"CERTIFICATE\" PEM block in file %s after skipping PEM blocks of the following types: %v", certFile, skippedBlockTypes)
+	}
+
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, err
+	}
+
+	_, cert.PrivateKey, err = GetSignerFromCert(x509Cert, csp)
+	if err != nil {
+		if keyFile != "" {
+			log.Debugf("Could not load TLS certificate with BCCSP: %s", err)
+			log.Debugf("Attempting fallback with certfile %s and keyfile %s", certFile, keyFile)
+			fallbackCerts, err := tls.LoadX509KeyPair(certFile, keyFile)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Could not get the private key %s that matches %s", keyFile, certFile)
+			}
+			cert = &fallbackCerts
+		} else {
+			return nil, errors.WithMessage(err, "Could not load TLS certificate with BCCSP")
+		}
+
+	}
+
+	return cert, nil
+}
+
+func LoadX509KeyPairSM2(certFile, keyFile string, csp bccsp.BCCSP) (*gtls.Certificate, error) {
 
 	certPEMBlock, err := ioutil.ReadFile(certFile)
 	if err != nil {

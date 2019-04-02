@@ -14,11 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package tls
+package gmtls
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"io/ioutil"
 	"time"
 
@@ -28,6 +26,8 @@ import (
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/tjfoc/gmsm/sm2"
+	gtls "github.com/tjfoc/gmtls"
 )
 
 // ServerTLSConfig defines key material for a TLS server
@@ -58,8 +58,8 @@ type KeyCertFiles struct {
 }
 
 // GetClientTLSConfig creates a tls.Config object from certs and roots
-func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*tls.Config, error) {
-	var certs []tls.Certificate
+func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*gtls.Config, error) {
+	var certs []gtls.Certificate
 
 	if csp == nil {
 		csp = factory.GetDefault()
@@ -75,7 +75,7 @@ func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*tls.Config, err
 			return nil, err
 		}
 
-		clientCert, err := util.LoadX509KeyPair(cfg.Client.CertFile, cfg.Client.KeyFile, csp)
+		clientCert, err := util.LoadX509KeyPairSM2(cfg.Client.CertFile, cfg.Client.KeyFile, csp)
 		if err != nil {
 			return nil, err
 		}
@@ -84,7 +84,7 @@ func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*tls.Config, err
 	} else {
 		log.Debug("Client TLS certificate and/or key file not provided")
 	}
-	rootCAPool := x509.NewCertPool()
+	rootCAPool := sm2.NewCertPool()
 	if len(cfg.CertFiles) == 0 {
 		return nil, errors.New("No TLS certificate files were provided")
 	}
@@ -100,7 +100,7 @@ func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*tls.Config, err
 		}
 	}
 
-	config := &tls.Config{
+	config := &gtls.Config{
 		Certificates: certs,
 		RootCAs:      rootCAPool,
 	}
