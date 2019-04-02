@@ -508,6 +508,7 @@ func (i *Identity) addTokenAuthHdr(req *http.Request, body []byte) error {
 	if err != nil {
 		return errors.WithMessage(err, "Failed to add token authorization header")
 	}
+	log.Debugf("token!!!!!!!!!!!!!!!!! %s" ,token)
 	req.Header.Set("authorization", token)
 	return nil
 }
