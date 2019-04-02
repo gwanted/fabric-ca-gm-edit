@@ -17,8 +17,8 @@ limitations under the License.
 package tls
 
 import (
-	tls "github.com/tjfoc/gmtls"
-	"github.com/tjfoc/gmsm/sm2"
+	"crypto/tls"
+	"crypto/x509"
 	"io/ioutil"
 	"time"
 
@@ -84,7 +84,7 @@ func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*tls.Config, err
 	} else {
 		log.Debug("Client TLS certificate and/or key file not provided")
 	}
-	rootCAPool := sm2.NewCertPool()
+	rootCAPool := x509.NewCertPool()
 	if len(cfg.CertFiles) == 0 {
 		return nil, errors.New("No TLS certificate files were provided")
 	}
