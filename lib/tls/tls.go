@@ -17,8 +17,8 @@ limitations under the License.
 package tls
 
 import (
-	"crypto/tls"
-	"crypto/x509"
+	"github.com/tjfoc/gmsm/sm2"
+	tls "github.com/tjfoc/gmtls"
 	"io/ioutil"
 	"time"
 

@@ -1195,8 +1195,9 @@ func parsePublicKey(algo PublicKeyAlgorithm, keyData *publicKeyInfo) (interface{
 			return nil, errors.New("x509: trailing data after ECDSA parameters")
 		}
 		namedCurve := namedCurveFromOID(*namedCurveOID)
+		fmt.Println(namedCurveOID)
 		if namedCurve == nil {
-			return nil, errors.New("x509: unsupported elliptic curve")
+			return nil, errors.New("x509: unsupported elliptic curve456789")
 		}
 		x, y := elliptic.Unmarshal(namedCurve, asn1Data)
 		if x == nil {
