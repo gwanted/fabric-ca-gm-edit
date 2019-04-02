@@ -20,7 +20,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
-	"crypto/tls"
+	// "crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -45,6 +45,7 @@ import (
 	"github.com/hyperledger/fabric/bccsp/factory"
 	cspsigner "github.com/hyperledger/fabric/bccsp/signer"
 	"github.com/hyperledger/fabric/bccsp/utils"
+	gtls "github.com/tjfoc/gmtls"
 )
 
 // GetDefaultBCCSP returns the default BCCSP
@@ -350,14 +351,14 @@ func ImportBCCSPKeyFromPEM(keyFile string, myCSP bccsp.BCCSP, temporary bool) (b
 //
 // This function originated from crypto/tls/tls.go and was adapted to use a
 // BCCSP Signer
-func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*tls.Certificate, error) {
+func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*gtls.Certificate, error) {
 
 	certPEMBlock, err := ioutil.ReadFile(certFile)
 	if err != nil {
 		return nil, err
 	}
 
-	cert := &tls.Certificate{}
+	cert := &gtls.Certificate{}
 	var skippedBlockTypes []string
 	for {
 		var certDERBlock *pem.Block
@@ -392,7 +393,7 @@ func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*tls.Certificat
 		if keyFile != "" {
 			log.Debugf("Could not load TLS certificate with BCCSP: %s", err)
 			log.Debugf("Attempting fallback with certfile %s and keyfile %s", certFile, keyFile)
-			fallbackCerts, err := tls.LoadX509KeyPair(certFile, keyFile)
+			fallbackCerts, err := gtls.LoadX509KeyPair(certFile, keyFile)
 			if err != nil {
 				return nil, errors.Wrapf(err, "Could not get the private key %s that matches %s", keyFile, certFile)
 			}

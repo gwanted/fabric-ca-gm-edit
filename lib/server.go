@@ -18,7 +18,7 @@ package lib
 
 import (
 	tls "github.com/tjfoc/gmtls"
-	"crypto/x509"
+	// "crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
 	"io"
@@ -45,6 +45,7 @@ import (
 	stls "github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/spf13/viper"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 const (
@@ -539,7 +540,7 @@ func (s *Server) listenAndServe() (err error) {
 			return errors.New("Invalid client auth type provided")
 		}
 
-		var certPool *x509.CertPool
+		var certPool *sm2.CertPool
 		if authType != defaultClientAuth {
 			certPool, err = LoadPEMCertPool(c.TLS.ClientAuth.CertFiles)
 			if err != nil {
