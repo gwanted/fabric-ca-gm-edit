@@ -195,6 +195,11 @@ func CreateToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, body []byte) (stri
 		if err != nil {
 			return "", err
 		}
+	case *sm2.PublicKey:
+		token, err = GenECDSAToken(csp, cert, key, body)
+		if err != nil {
+			return "", err
+		}
 	}
 	return token, nil
 }
