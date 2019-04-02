@@ -181,6 +181,7 @@ func CreateToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, body []byte) (stri
 	var token string
 
 	//The RSA Key Gen is commented right now as there is bccsp does
+	log.Debugf("public type~~~~~~ %T",publicKey)
 	switch publicKey.(type) {
 	/*
 		case *rsa.PublicKey:
