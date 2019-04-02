@@ -526,6 +526,7 @@ func (s *Server) listenAndServe() (err error) {
 
 		cer, err := util.LoadX509KeyPairSM2(c.TLS.CertFile, c.TLS.KeyFile, s.csp)
 		if err != nil {
+			log.Debugf("LoadX509KeyPairSM2 ERROR %s",err.Error())
 			return err
 		}
 
