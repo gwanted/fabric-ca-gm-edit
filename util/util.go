@@ -235,7 +235,7 @@ func GenECDSAToken(csp bccsp.BCCSP, cert []byte, key bccsp.Key, body []byte) (st
 	b64cert := B64Encode(cert)
 	bodyAndcert := b64body + "." + b64cert
 
-	digest, digestError := csp.Hash([]byte(bodyAndcert), &bccsp.SHAOpts{})
+	digest, digestError := csp.Hash([]byte(bodyAndcert), &bccsp.SHA256Opts{})
 	if digestError != nil {
 		return "", errors.WithMessage(digestError, fmt.Sprintf("Hash failed on '%s'", bodyAndcert))
 	}

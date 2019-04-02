@@ -1213,7 +1213,6 @@ func parsePublicKey(algo PublicKeyAlgorithm, keyData *publicKeyInfo) (interface{
 			X:     x,
 			Y:     y,
 		}
-		log.Debugf("holy shit ! X=%d Y=%d cruve=%v",x,y,*namedCurveOID)
 		return pub, nil
 	default:
 		return nil, nil
@@ -2510,7 +2509,6 @@ func CreateCertificateRequestToPem(FileName string, template *CertificateRequest
 }
 
 func ReadCertificateFromMem(data []byte) (*Certificate, error) {
-	log.Debugf("kidding1 %v", data)
 	block, _ := pem.Decode(data)
 	if block == nil {
 		return nil, fmt.Errorf("failed to decode certificate1 request %v", data)
@@ -2523,7 +2521,6 @@ func ReadCertificateFromPem(FileName string) (*Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Debugf("kidding %v", data)
 	return ReadCertificateFromMem(data)
 }
 

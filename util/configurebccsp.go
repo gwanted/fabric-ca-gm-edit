@@ -37,7 +37,6 @@ func ConfigureBCCSP(optsPtr **factory.FactoryOpts, mspDir, homeDir string) error
 	if opts == nil {
 		opts = &factory.FactoryOpts{}
 	}
-	log.Debugf("caocaocaocaocaocaocaocaocao %s",opts.ProviderName)
 	// if opts.ProviderName == "" {
 		opts.ProviderName = "GM"
 	// }
