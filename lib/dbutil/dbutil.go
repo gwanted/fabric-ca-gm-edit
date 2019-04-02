@@ -26,7 +26,7 @@ import (
 
 	"github.com/cloudflare/cfssl/log"
 	"github.com/go-sql-driver/mysql"
-	"github.com/tjfoc/fabric-ca-gm/lib/tls"
+	tls "github.com/tjfoc/gmtls"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/jmoiron/sqlx"
 )

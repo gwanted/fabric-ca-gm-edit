@@ -36,7 +36,7 @@ import (
 	"github.com/tjfoc/fabric-ca-gm/api"
 	. "github.com/tjfoc/fabric-ca-gm/lib"
 	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
-	libtls "github.com/tjfoc/fabric-ca-gm/lib/tls"
+	libtls "github.com/tjfoc/gmtls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/tjfoc/hyperledger-fabric-gm/bccsp/factory"
 	"github.com/stretchr/testify/assert"

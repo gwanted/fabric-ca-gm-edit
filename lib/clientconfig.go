@@ -23,7 +23,7 @@ import (
 
 	"github.com/cloudflare/cfssl/log"
 	"github.com/tjfoc/fabric-ca-gm/api"
-	"github.com/tjfoc/fabric-ca-gm/lib/tls"
+	tls "github.com/tjfoc/gmtls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/hyperledger/fabric/bccsp/factory"
 	"github.com/pkg/errors"

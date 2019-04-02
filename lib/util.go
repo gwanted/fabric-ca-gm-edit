@@ -17,7 +17,7 @@ limitations under the License.
 package lib
 
 import (
-	"crypto/tls"
+	tls "github.com/tjfoc/gmtls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"

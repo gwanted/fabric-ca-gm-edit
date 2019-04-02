@@ -17,7 +17,7 @@ limitations under the License.
 package lib
 
 import (
-	"crypto/tls"
+	tls "github.com/tjfoc/gmtls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
@@ -42,7 +42,7 @@ import (
 	"github.com/tjfoc/fabric-ca-gm/lib/attr"
 	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
 	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
-	stls "github.com/tjfoc/fabric-ca-gm/lib/tls"
+	stls "github.com/tjfoc/gmtls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/spf13/viper"
 )
