@@ -47,7 +47,7 @@ import (
 	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
 	"github.com/tjfoc/fabric-ca-gm/lib/spi"
 	"github.com/tjfoc/fabric-ca-gm/lib/tcert"
-	tls "github.com/tjfoc/gmtls"
+	"github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/tjfoc/gmsm/sm2"
 	"github.com/hyperledger/fabric/bccsp"

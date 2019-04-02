@@ -36,7 +36,7 @@ import (
 	"github.com/cloudflare/cfssl/log"
 	"github.com/tjfoc/fabric-ca-gm/api"
 	"github.com/tjfoc/fabric-ca-gm/lib/streamer"
-	tls "github.com/tjfoc/gmtls"
+	"github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/mitchellh/mapstructure"

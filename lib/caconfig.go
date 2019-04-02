@@ -23,7 +23,7 @@ import (
 	"github.com/tjfoc/fabric-ca-gm/api"
 	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
 	"github.com/tjfoc/fabric-ca-gm/lib/ldap"
-	tls "github.com/tjfoc/gmtls"
+	"github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/hyperledger/fabric/bccsp/factory"
 )

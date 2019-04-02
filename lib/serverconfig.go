@@ -16,7 +16,7 @@ limitations under the License.
 
 package lib
 
-import tls "github.com/tjfoc/gmtls"
+import "github.com/tjfoc/fabric-ca-gm/lib/tls"
 
 const (
 	// DefaultServerPort is the default listening port for the fabric-ca server

@@ -42,7 +42,7 @@ import (
 	"github.com/tjfoc/fabric-ca-gm/lib/attr"
 	"github.com/tjfoc/fabric-ca-gm/lib/dbutil"
 	"github.com/tjfoc/fabric-ca-gm/lib/metadata"
-	stls "github.com/tjfoc/gmtls"
+	stls "github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/spf13/viper"
 )

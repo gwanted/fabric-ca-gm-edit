@@ -31,7 +31,7 @@ import (
 	"github.com/cloudflare/cfssl/log"
 	"github.com/tjfoc/fabric-ca-gm/api"
 	"github.com/tjfoc/fabric-ca-gm/lib/spi"
-	ctls "github.com/tjfoc/gmtls"
+	ctls "github.com/tjfoc/fabric-ca-gm/lib/tls"
 	"github.com/tjfoc/fabric-ca-gm/util"
 	"github.com/hyperledger/fabric/bccsp"
 	ldap "gopkg.in/ldap.v2"
