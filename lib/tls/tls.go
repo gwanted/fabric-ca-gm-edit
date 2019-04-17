@@ -93,7 +93,7 @@ func GetClientTLSConfig(cfg *ClientTLSConfig, csp bccsp.BCCSP) (*tls.Config, err
 	} else {
 		log.Debug("Client TLS certificate and/or key file not provided")
 	}
-	rootCAPool := sm2.NewCertPool()
+	rootCAPool := x509.NewCertPool()
 	if len(cfg.CertFiles) == 0 {
 		return nil, errors.New("No trusted root certificates for TLS were provided")
 	}

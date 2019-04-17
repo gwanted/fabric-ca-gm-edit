@@ -545,7 +545,7 @@ func (s *Server) listenAndServe() (err error) {
 			return errors.New("Invalid client auth type provided")
 		}
 
-		var certPool *sm2.CertPool
+		var certPool *x509.CertPool
 		if authType != defaultClientAuth {
 			certPool, err = LoadPEMCertPool(c.TLS.ClientAuth.CertFiles)
 			if err != nil {
