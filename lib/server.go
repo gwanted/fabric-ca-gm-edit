@@ -7,8 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package lib
 
 import (
-	"crypto/tls"
-	"crypto/x509"
+	tls "github.com/tjfoc/gmtls"
+	//"crypto/x509"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -35,6 +35,7 @@ import (
 	"github.com/hyperledger/fabric-ca/util"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
+	"github.com/tjfoc/gmsm/sm2"
 )
 
 const (
@@ -529,7 +530,7 @@ func (s *Server) listenAndServe() (err error) {
 			}
 		}
 
-		cer, err := util.LoadX509KeyPair(c.TLS.CertFile, c.TLS.KeyFile, s.csp)
+		cer, err := util.LoadX509KeyPairSM2(c.TLS.CertFile, c.TLS.KeyFile, s.csp)
 		if err != nil {
 			return err
 		}
@@ -545,7 +546,7 @@ func (s *Server) listenAndServe() (err error) {
 			return errors.New("Invalid client auth type provided")
 		}
 
-		var certPool *x509.CertPool
+		var certPool *sm2.CertPool
 		if authType != defaultClientAuth {
 			certPool, err = LoadPEMCertPool(c.TLS.ClientAuth.CertFiles)
 			if err != nil {

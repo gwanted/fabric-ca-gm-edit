@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package lib
 
 import (
-	"crypto/tls"
+	tls "github.com/tjfoc/gmtls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -62,8 +62,8 @@ func BytesToX509Cert(bytes []byte) (*x509.Certificate, error) {
 }
 
 // LoadPEMCertPool loads a pool of PEM certificates from list of files
-func LoadPEMCertPool(certFiles []string) (*x509.CertPool, error) {
-	certPool := x509.NewCertPool()
+func LoadPEMCertPool(certFiles []string) (*sm2.CertPool, error) {
+	certPool := sm2.NewCertPool()
 
 	if len(certFiles) > 0 {
 		for _, cert := range certFiles {

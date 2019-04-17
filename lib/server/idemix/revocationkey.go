@@ -121,7 +121,7 @@ func (rk *caIdemixRevocationKey) SetNewKey() (err error) {
 
 // EncodeKeys encodes sm2 key pair to PEM encoding
 func EncodeKeys(privateKey *sm2.PrivateKey, publicKey *sm2.PublicKey) ([]byte, []byte, error) {
-	encodedPK, err := sm2.MarshalECPrivateKey(privateKey)
+	encodedPK, err := sm2.MarshalSm2UnecryptedPrivateKey(privateKey)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "Failed to encode sm2 private key")
 	}
@@ -141,7 +141,7 @@ func DecodeKeys(pemEncodedPK, pemEncodedPubKey []byte) (*sm2.PrivateKey, *sm2.Pu
 	if block == nil {
 		return nil, nil, errors.New("Failed to decode sm2 private key")
 	}
-	pk, err := sm2.ParseECPrivateKey(block.Bytes)
+	pk, err := sm2.ParsePKCS8UnecryptedPrivateKey(block.Bytes)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "Failed to parse sm2 private key bytes")
 	}
