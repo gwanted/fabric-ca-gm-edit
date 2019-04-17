@@ -7,8 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package lib
 
 import (
-	"github.com/tjfoc/gmsm/sm2"
-	tls "github.com/tjfoc/gmtls"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"io/ioutil"
